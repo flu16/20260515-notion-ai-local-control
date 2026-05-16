@@ -10,6 +10,7 @@
     ./venv/bin/python search_element.py "提交 AI 消息"
     ./venv/bin/python search_element.py "拷贝回复" --timeout 30
     ./venv/bin/python search_element.py --list
+    ./venv/bin/python search_element.py --list --region 25,45,75,92 --include-empty
 """
 
 import sys
@@ -130,20 +131,20 @@ def search_element(target_description: str, wait_timeout: float = 0.0,
     }
 
 
-def list_all_elements() -> dict:
+def scan_region(bounds: dict, x_range=(0, 100), y_range=(0, 100), step: int = 2):
     """
-    用网格扫描列出 AI 窗口中所有唯一 AXDescription/AXTitle 的可见元素。
+    在窗口百分比区域内扫描可见 AX 元素。
     """
-    app_element, app, window, bounds, error = get_ai_window_context()
+    app_element, app, window, current_bounds, error = get_ai_window_context()
     if error:
         return {"success": False, "elements": [], "error": error}
 
-    x0, y0, ww, wh = bounds_tuple(bounds)
+    x0, y0, ww, wh = bounds_tuple(bounds or current_bounds)
     seen = set()
     elements = []
 
-    for yr in range(0, 101, 2):
-        for xr in range(0, 101, 2):
+    for yr in range(y_range[0], y_range[1] + 1, step):
+        for xr in range(x_range[0], x_range[1] + 1, step):
             elem = element_at_position(
                 app_element,
                 float(x0 + ww * xr / 100.0),
@@ -152,20 +153,91 @@ def list_all_elements() -> dict:
             if elem is None:
                 continue
 
-            desc = ax_str(elem, kAXDescriptionAttribute)
-            title = ax_str(elem, kAXTitleAttribute)
-            label = desc or title
-            if not label or label in seen:
+            info = element_info(elem)
+            key = (
+                info["role"],
+                info["description"],
+                info["title"],
+                info["position"],
+                info["size"],
+            )
+            if key in seen:
                 continue
-            seen.add(label)
+            seen.add(key)
 
-            info = element_info(elem, description=desc)
             info["value"] = info["value"][:80]
-            info["label"] = label
+            info["label"] = info["description"] or info["title"]
             elements.append(info)
+
+    elements.sort(key=lambda e: (
+        e["position"][1] if e.get("position") else 0,
+        e["position"][0] if e.get("position") else 0,
+        e["label"] or "",
+    ))
+    return {"success": True, "elements": elements}
+
+
+def list_all_elements(x_range=(0, 100), y_range=(0, 100), step: int = 2,
+                      include_empty: bool = False) -> dict:
+    """
+    用网格扫描列出 AI 窗口中所有唯一 AXDescription/AXTitle 的可见元素。
+    """
+    app_element, app, window, bounds, error = get_ai_window_context()
+    if error:
+        return {"success": False, "elements": [], "error": error}
+
+    result = scan_region(bounds, x_range=x_range, y_range=y_range, step=step)
+    if not result["success"]:
+        return result
+
+    seen_labels = set()
+    elements = []
+    for info in result["elements"]:
+        label = info["label"]
+        if not label and not include_empty:
+            continue
+        if label:
+            key = ("label", label)
+        else:
+            key = ("empty", info["role"], info["position"], info["size"])
+            info["label"] = "<empty>"
+        if key in seen_labels:
+            continue
+        seen_labels.add(key)
+        elements.append(info)
 
     elements.sort(key=lambda e: e["label"])
     return {"success": True, "elements": elements}
+
+
+def parse_region(value: str):
+    parts = value.split(",")
+    if len(parts) != 4:
+        raise ValueError("region 必须是 x1,y1,x2,y2")
+    x1, y1, x2, y2 = [int(part.strip()) for part in parts]
+    if not (0 <= x1 <= x2 <= 100 and 0 <= y1 <= y2 <= 100):
+        raise ValueError("region 百分比必须满足 0 <= x1 <= x2 <= 100, 0 <= y1 <= y2 <= 100")
+    return (x1, x2), (y1, y2)
+
+
+def print_elements(result: dict):
+    if not result["success"]:
+        print(f"错误: {result['error']}")
+        sys.exit(1)
+
+    print(f"找到 {len(result['elements'])} 个唯一元素:\n")
+    for i, el in enumerate(result["elements"], 1):
+        pos_str = f"({int(el['position'][0])},{int(el['position'][1])})" if el["position"] else "?"
+        size_str = f"{int(el['size'][0])}x{int(el['size'][1])}" if el["size"] else "?"
+        print(f"  {i}. {el['label']}")
+        print(f"     role={el['role']}  pos={pos_str}  size={size_str}  "
+              f"actions={el['actions']}")
+        if el["description"] and el["description"] != el["label"]:
+            print(f"     description={el['description']}")
+        if el["title"] and el["title"] != el["label"]:
+            print(f"     title={el['title']}")
+        if el["value"]:
+            print(f"     value={el['value']}")
 
 
 def main():
@@ -174,32 +246,49 @@ def main():
         print('  ./venv/bin/python search_element.py "提交 AI 消息"')
         print('  ./venv/bin/python search_element.py "拷贝回复" --timeout 30')
         print('  ./venv/bin/python search_element.py --list')
+        print('  ./venv/bin/python search_element.py --list --region 25,45,75,92 --include-empty')
         print()
         print("选项:")
         print("  --timeout / -t SEC  等待超时（秒），默认 0（即刻返回）")
         print("  --step N            网格扫描步长百分比（默认 1）")
         print("  --list              列出窗口内所有可见元素（调试用）")
+        print("  --region X1,Y1,X2,Y2  只扫描窗口百分比区域，配合 --list 使用")
+        print("  --include-empty     列出没有 AXDescription/AXTitle 的元素")
         sys.exit(0)
 
     if sys.argv[1] == "--list":
         print("===== 列出 AI 窗口所有元素 =====\n")
-        result = list_all_elements()
-        if not result["success"]:
-            print(f"错误: {result['error']}")
-            sys.exit(1)
-        print(f"找到 {len(result['elements'])} 个唯一元素:\n")
-        for i, el in enumerate(result["elements"], 1):
-            pos_str = f"({int(el['position'][0])},{int(el['position'][1])})" if el["position"] else "?"
-            size_str = f"{int(el['size'][0])}x{int(el['size'][1])}" if el["size"] else "?"
-            print(f"  {i}. {el['label']}")
-            print(f"     role={el['role']}  pos={pos_str}  size={size_str}  "
-                  f"actions={el['actions']}")
-            if el["description"] and el["description"] != el["label"]:
-                print(f"     description={el['description']}")
-            if el["title"] and el["title"] != el["label"]:
-                print(f"     title={el['title']}")
-            if el["value"]:
-                print(f"     value={el['value']}")
+        x_range = (0, 100)
+        y_range = (0, 100)
+        step = 2
+        include_empty = False
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--region" and i + 1 < len(args):
+                try:
+                    x_range, y_range = parse_region(args[i + 1])
+                except ValueError as exc:
+                    print(f"错误: {exc}")
+                    sys.exit(1)
+                i += 2
+            elif args[i] == "--step" and i + 1 < len(args):
+                step = int(args[i + 1])
+                i += 2
+            elif args[i] == "--include-empty":
+                include_empty = True
+                i += 1
+            else:
+                i += 1
+
+        print(f"扫描区域: x={x_range[0]}%-{x_range[1]}%, y={y_range[0]}%-{y_range[1]}%, step={step}%")
+        result = list_all_elements(
+            x_range=x_range,
+            y_range=y_range,
+            step=step,
+            include_empty=include_empty,
+        )
+        print_elements(result)
         sys.exit(0)
 
     target = sys.argv[1]
