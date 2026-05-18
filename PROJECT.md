@@ -50,6 +50,7 @@
 ├── search_element.py
 ├── click_element.py
 ├── input_box.py
+├── model_selector.py
 ├── check_ai_state.py
 ├── copy_reply.py
 ├── watch_focus.py
@@ -289,6 +290,44 @@
 - 不使用鼠标，不使用 `Shift+Tab`
 
 当前稳定输入路径详见 `PROBLEM_SOLUTIONS.md`。
+
+### `model_selector.py`
+
+负责读取和切换 Notion AI 当前使用的模型。
+
+命令：
+
+```bash
+./venv/bin/python model_selector.py --current
+./venv/bin/python model_selector.py --list
+./venv/bin/python model_selector.py "GPT-5.4"
+./venv/bin/python model_selector.py "自动"
+```
+
+当前实现：
+
+- 模型识别逻辑集中在 `model_selector.current_model(...)`
+- `check_ai_state.py` 复用 `model_selector.current_model(...)` 读取当前模型
+- 模型按钮必须满足：
+  - `role=AXPopUpButton`
+  - 位于输入框 `AXTextArea` 下方
+  - 内部包含同名 `AXStaticText`
+- 打开模型菜单后，目标模型以 `AXMenuItem` 暴露
+- 对目标 `AXMenuItem` 执行 `AXPress`
+- 选择后重新读取当前模型验证
+
+已观察到的模型项包括：
+
+- `自动`
+- `Sonnet 4.6`
+- `Opus 4.6`
+- `Opus 4.7`
+- `Gemini 3.1 Pro`
+- `GPT-5.2`
+- `GPT-5.4`
+- `GPT-5.5`
+- `Kimi K2.6`
+- `DeepSeek V4 Pro`
 
 ### `check_ai_state.py`
 

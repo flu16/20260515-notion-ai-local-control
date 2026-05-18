@@ -27,12 +27,15 @@
   - 该按钮的 AXDescription 通常就是模型名，例如 `Opus 4.7` / `GPT-5.5`。
 
 用法：
-    ./venv/bin/python check_ai_state.py
-    ./venv/bin/python check_ai_state.py --json
+    ./venv/bin/python check_ai_state.py          # 每 0.5 秒扫描一次，只输出变化
+    ./venv/bin/python check_ai_state.py --once   # 单次人类可读输出
+    ./venv/bin/python check_ai_state.py --json   # 单次 JSON 输出
 """
 
+from datetime import datetime
 import json
 import sys
+import time
 
 from notion_ax import (
     ax_str,
@@ -371,57 +374,6 @@ def input_static_texts(input_elements: list[dict], text_area: dict | None) -> li
     return texts
 
 
-def current_model(input_elements: list[dict]) -> dict:
-    """
-    检测当前使用的模型。
-
-    模型选择器目前暴露为输入框区域中的 AXPopUpButton：
-      - role=AXPopUpButton
-      - roleDesc=弹出式按钮
-      - description=<模型名>
-
-    同一区域还有其它 AXPopUpButton，例如 `提供背景信息`、`设置`。
-    模型按钮的稳定特征是：内部包含一个同名 AXStaticText。
-    """
-    popup_buttons = [
-        info for info in input_elements
-        if info["role"] == "AXPopUpButton" and element_label(info)
-    ]
-    static_texts = [
-        info for info in input_elements
-        if info["role"] == "AXStaticText" and info.get("role_description") == "文本"
-    ]
-
-    for button in popup_buttons:
-        label = element_label(button)
-        for text in static_texts:
-            if text.get("value") == label and element_contains(button, text):
-                return {
-                    "name": label,
-                    "element": {
-                        "role": button["role"],
-                        "role_description": button.get("role_description"),
-                        "label": label,
-                        "position": button.get("position"),
-                        "size": button.get("size"),
-                        "actions": button.get("actions"),
-                    },
-                    "text_element": {
-                        "role": text["role"],
-                        "role_description": text.get("role_description"),
-                        "value": text.get("value"),
-                        "position": text.get("position"),
-                        "size": text.get("size"),
-                    },
-                }
-
-    return {
-        "name": None,
-        "element": None,
-        "text_element": None,
-    }
-
-
 def input_state(input_elements: list[dict], text_area: dict | None) -> tuple[str, list[dict]]:
     """
     判断输入框状态。
@@ -598,7 +550,9 @@ def check_ai_state() -> dict:
 
     conv_state, conv_state_elements = conversation_state(conversation_elements, input_elements)
     inp_state, inp_state_elements = input_state(input_elements, text_area)
-    model_info = current_model(input_elements)
+    from model_selector import current_model
+
+    model_info = current_model(input_elements, text_area)
     mode_pat = current_mode_pattern(input_elements, text_area)
 
     return {
@@ -659,35 +613,99 @@ def check_ai_state() -> dict:
     }
 
 
+def state_key(result: dict) -> tuple:
+    """
+    生成状态变化检测 key。
+
+    默认观察模式只在这个 key 变化时输出，避免每 0.5 秒刷屏。
+    """
+    return (
+        result.get("success"),
+        result.get("conversation_state"),
+        result.get("input_state"),
+        result.get("mode_pattern"),
+        result.get("model"),
+        result.get("input_button_desc"),
+        tuple(result.get("regions", {}).get("completed_signal_labels") or []),
+        result.get("error"),
+    )
+
+
+def format_state_line(result: dict) -> str:
+    """格式化一行状态输出。"""
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    if not result.get("success"):
+        return f"{ts} 等待/失败: {result.get('error', '未知错误')}"
+
+    regions = result.get("regions", {})
+    return (
+        f"{ts} "
+        f"对话={result['conversation_state_label']}({result['conversation_state']}) | "
+        f"输入={result['input_state_label']}({result['input_state']}) | "
+        f"模式={result.get('mode_pattern_label')}({result.get('mode_pattern')}) | "
+        f"模型={result.get('model') or '无'} | "
+        f"输入按钮={result.get('input_button_desc') or '无'} | "
+        f"对话文本数={regions.get('conversation_static_text_count')} | "
+        f"完成信号={regions.get('completed_signal_count')}"
+    )
+
+
+def print_once(result: dict):
+    """打印单次人类可读状态。"""
+    if result["success"]:
+        print(f"对话框状态: {result['conversation_state_label']} ({result['conversation_state']})")
+        print(f"输入框状态: {result['input_state_label']} ({result['input_state']})")
+        print(f"当前模式: {result.get('mode_pattern_label')} ({result.get('mode_pattern')})")
+        print(f"当前模型: {result.get('model')}")
+        print(f"输入按钮: {result.get('input_button_desc')}")
+        regions = result.get("regions", {})
+        print(f"对话框文本数量: {regions.get('conversation_static_text_count')}")
+        if regions.get("conversation_static_text_values"):
+            print("对话框文本:")
+            for value in regions["conversation_static_text_values"]:
+                print(f"  - {value}")
+        print(f"完成回复信号数量: {regions.get('completed_signal_count')}")
+    else:
+        print(f"检测失败: {result['error']}")
+
+
 def main():
     use_json = "--json" in sys.argv
+    use_once = "--once" in sys.argv
 
-    if not use_json:
-        print("===== Notion AI 状态检测 =====\n")
+    if "-h" in sys.argv or "--help" in sys.argv:
+        print("用法: ./venv/bin/python check_ai_state.py [选项]")
+        print()
+        print("默认: 每 0.5 秒扫描一次，只输出变化")
+        print("  --once    单次人类可读输出")
+        print("  --json    单次 JSON 输出")
+        sys.exit(0)
 
     result = check_ai_state()
 
     if use_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
-        if result["success"]:
-            print(f"对话框状态: {result['conversation_state_label']} ({result['conversation_state']})")
-            print(f"输入框状态: {result['input_state_label']} ({result['input_state']})")
-            print(f"当前模式: {result.get('mode_pattern_label')} ({result.get('mode_pattern')})")
-            print(f"当前模型: {result.get('model')}")
-            print(f"输入按钮: {result.get('input_button_desc')}")
-            regions = result.get("regions", {})
-            print(f"对话框文本数量: {regions.get('conversation_static_text_count')}")
-            if regions.get("conversation_static_text_values"):
-                print("对话框文本:")
-                for value in regions["conversation_static_text_values"]:
-                    print(f"  - {value}")
-            print(f"完成回复信号数量: {regions.get('completed_signal_count')}")
-        else:
-            print(f"检测失败: {result['error']}")
+        sys.exit(0 if result["success"] else 1)
 
-    if not result["success"]:
-        sys.exit(1)
+    if use_once:
+        print("===== Notion AI 状态检测 =====\n")
+        print_once(result)
+        sys.exit(0 if result["success"] else 1)
+
+    print("===== Notion AI 状态监听：每 0.5 秒扫描，只输出变化 =====")
+    print("按 Ctrl+C 结束。\n")
+    last_key = None
+    try:
+        while True:
+            key = state_key(result)
+            if key != last_key:
+                print(format_state_line(result), flush=True)
+                last_key = key
+
+            time.sleep(0.5)
+            result = check_ai_state()
+    except KeyboardInterrupt:
+        print("\n已停止。")
 
 
 if __name__ == "__main__":
