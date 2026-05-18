@@ -183,7 +183,8 @@ actions=AXShowMenu, AXScrollToVisible
 
 ### 回复操作按钮：拷贝回复
 
-这是 `copy_reply.py` 后续要点击的目标按钮。完成态中它通常出现在回复底部操作区。
+这是 `ask_and_copy_reply.py` 在完成态、贴住底部后要点击的目标按钮。
+它通常出现在最新回复底部操作区。
 
 ```text
 role=AXButton
@@ -418,10 +419,12 @@ actions=AXPress, AXShowMenu, AXScrollToVisible
 
 1. `generating`：输入框区域出现 `停止 AI 消息`
 2. `new_conversation`：对话框区域只有初始问候语，且没有完成态按钮
-3. `detach_to_bottom`：对话框区域出现无 label、约 32x32、可 `AXPress` 的回到底部按钮
-4. `attach_to_bottom`：没有生成、没有回到底部按钮，且出现完成态操作按钮
+3. `complete`：回复已完成，出现完成态操作按钮，或内部检测到脱离底部的回到底部按钮
 
-`attach_to_bottom` 需要完成态操作按钮作为证据，避免 new_conversation 页面因为没有回到底部按钮而被误判。
+贴底状态不再作为 `conversation_state` 暴露，而是单独输出：
+
+- `is_attach_to_bottom=true`：完成态操作按钮可见，且没有回到底部按钮
+- `is_attach_to_bottom=false`：新对话、生成中、脱离底部或未知状态
 
 ### 判断输入框状态
 

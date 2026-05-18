@@ -26,6 +26,8 @@ def format_state(result: dict) -> str:
         return "等待 AI 窗口..."
 
     return (
+        f"新对话={'是' if result.get('is_new_conversation') else '否'} | "
+        f"贴住底部={'是' if result.get('is_attach_to_bottom') else '否'} | "
         f"对话={result['conversation_state_label']}({result['conversation_state']}) | "
         f"输入={result['input_state_label']}({result['input_state']}) | "
         f"模式={result.get('mode_pattern_label') or '默认模式'}({result.get('mode_pattern') or 'default'}) | "
@@ -37,6 +39,8 @@ def format_state(result: dict) -> str:
 def state_key(result: dict):
     return (
         result.get("success"),
+        result.get("is_new_conversation"),
+        result.get("is_attach_to_bottom"),
         result.get("conversation_state"),
         result.get("input_state"),
         result.get("mode_pattern"),

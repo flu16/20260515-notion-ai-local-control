@@ -161,3 +161,64 @@ AXFocus -> AXSelectedTextRange=(0,0) -> Cmd+V -> AXValue 验证
 ```
 
 `Shift+Tab` 路径已从 `input_box.py` 主实现中移除，只作为历史实验结论保留在记录里。
+
+## ask_and_copy_reply 的完成态复制
+
+### 问题
+
+`ask_and_copy_reply.py` 的流程里，输入问题时会先把问题写入系统剪贴板，
+然后通过 Cmd+V 粘贴到 Notion AI 输入框。
+
+因此在提交之后、复制回复之前，剪贴板里很可能仍然是刚刚提交的问题。
+
+如果按下 `拷贝回复` 后立刻读取剪贴板，可能读到旧值，看起来就像复制到了用户问题，
+而不是 AI 回复。
+
+### 观察到的现象
+
+失败表现：
+
+```text
+输入问题：请只回答：苹果
+按下：拷贝回复
+立刻读取剪贴板：请只回答：苹果
+稍后剪贴板实际变成：苹果
+```
+
+也就是说，`拷贝回复` 的 AXPress 已经成功，但剪贴板更新存在短暂延迟。
+
+### 解决方法
+
+复制前先记录旧剪贴板内容：
+
+```text
+before = get_clipboard_text()
+```
+
+按下 `拷贝回复` 后，不要因为剪贴板非空就立刻返回。
+必须等待剪贴板内容变成不同值：
+
+```text
+while timeout_not_reached:
+    text = get_clipboard_text()
+    if text and text != before:
+        return text
+```
+
+如果超时后剪贴板仍然没变化，应返回失败。
+这能避免把输入阶段留下的旧剪贴板内容当成 AI 回复。
+
+### 相关状态判断
+
+生成过程中 `拷贝回复` 按钮可能短暂出现，不能作为完成信号直接点击。
+正确顺序是：
+
+```text
+1. 提交问题。
+2. 等待 conversation_state 进入 generating。
+3. 等待 conversation_state 稳定到 complete。
+4. 如果 is_attach_to_bottom=false，先按无 label 的 32x32 回到底部按钮。
+5. 等到 is_attach_to_bottom=true。
+6. 再按最靠下的 `拷贝回复`。
+7. 等待剪贴板从旧值变成新值。
+```

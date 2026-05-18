@@ -3,6 +3,8 @@
 判断 Notion AI 窗口当前所处的状态。
 
 当前状态模型：
+  - is_new_conversation: 当前对话框区域是否处在新对话状态。
+  - is_attach_to_bottom: 当前对话框区域是否贴住底部。
   - conversation_state: 对话框状态。
   - input_state:        输入框状态。
   - model:              当前模型名。
@@ -14,8 +16,11 @@
 对话框滚动/生成状态：
   - new_conversation:             对话框区域只有一句初始问候文本，没有完成态按钮。
   - generating:        输入框区域出现 "停止 AI 消息"，说明 AI 正在生成。
-  - detach_to_bottom:  对话框区域出现无 label 的 32x32 回到底部按钮，说明当前未贴住底部。
-  - attach_to_bottom:  未生成、未出现回到底部按钮，且出现完成态操作按钮。
+  - complete:          AI 回复已完成。
+
+底部贴合状态：
+  - is_attach_to_bottom=True:  回复完成后，未出现回到底部按钮，且完成态操作按钮可见。
+  - is_attach_to_bottom=False: 新对话、生成中、脱离底部或未知状态。
 
 输入框状态：
   - generating: 输入框区域出现 "停止 AI 消息"，说明问题已经提交，AI 正在生成。
@@ -44,6 +49,7 @@ from notion_ax import (
     element_info,
     get_ai_window_context,
     kAXDescriptionAttribute,
+    kAXTitleAttribute,
 )
 
 
@@ -52,14 +58,6 @@ SUBMIT_BUTTON_DESC = "提交 AI 消息"
 INPUT_BUTTON_DESCRIPTIONS = {
     STOP_GENERATING_BUTTON_DESC,
     SUBMIT_BUTTON_DESC,
-}
-
-STATE_LABELS = {
-    "new_conversation": "新对话",
-    "generating": "正在生成",
-    "detach_to_bottom": "脱离底部",
-    "attach_to_bottom": "贴住底部",
-    "unknown": "未知",
 }
 
 NEW_CONVERSATION_GREETINGS = {
@@ -76,8 +74,7 @@ COMPLETED_SIGNAL_LABELS = {
 CONVERSATION_STATE_LABELS = {
     "new_conversation": "新对话",
     "generating": "正在生成",
-    "attach_to_bottom": "贴住底部",
-    "detach_to_bottom": "脱离底部",
+    "complete": "完成",
     "unknown": "未知",
 }
 
@@ -86,12 +83,6 @@ INPUT_STATE_LABELS = {
     "typing": "正在输入",
     "generating": "已提交生成中",
     "unknown": "未知",
-}
-
-IGNORED_INPUT_STATIC_TEXT_VALUES = {
-    "默认模式",
-    "询问模式",
-    "计划模式",
 }
 
 SCAN_Y_RANGE = (85, 98)
@@ -248,54 +239,6 @@ def element_contains(container: dict, child: dict) -> bool:
     cw, ch = c_size
     px, py = child_pos
     return cx <= px <= cx + cw and cy <= py <= cy + ch
-
-
-def is_static_text_inside_popup_button(info: dict, input_elements: list[dict]) -> bool:
-    """
-    判断静态文本是否属于输入区里的弹出按钮。
-
-    模型选择器会同时暴露：
-      - AXPopUpButton description=<模型名>
-      - AXStaticText value=<模型名>
-
-    其中 AXStaticText 只是按钮内部文字，不应被当成输入草稿。
-    """
-    popup_buttons = [
-        elem for elem in input_elements
-        if elem["role"] == "AXPopUpButton"
-    ]
-    return any(element_contains(button, info) for button in popup_buttons)
-
-
-def is_static_text_near_popup_button(info: dict, input_elements: list[dict]) -> bool:
-    """
-    判断静态文本是否是弹出按钮的菜单/提示文本。
-
-    模型选择器展开或悬停时，可能在按钮上方暴露 `更改 AI 模型`
-    和当前模型名。这些文本不在按钮 bounds 内，但 x 位置和按钮重叠，
-    且距离按钮很近，不应算作输入草稿。
-    """
-    pos = info.get("position")
-    if not pos:
-        return False
-
-    px, py = pos
-    for button in input_elements:
-        if button["role"] != "AXPopUpButton":
-            continue
-        b_pos = button.get("position")
-        b_size = button.get("size")
-        if not b_pos or not b_size:
-            continue
-
-        bx, by = b_pos
-        bw, bh = b_size
-        overlaps_x = bx <= px <= bx + bw
-        near_y = by - 80 <= py <= by + bh + 20
-        if overlaps_x and near_y:
-            return True
-
-    return False
 
 
 def current_mode_pattern(input_elements: list[dict], text_area: dict | None) -> str:
@@ -519,6 +462,54 @@ def scan_for_input_button_desc(app_element, bounds: dict) -> str | None:
     return None
 
 
+def is_new_conversation_state(conv_state: str) -> bool:
+    """
+    判断当前对话框区域是否是“新对话”状态。
+
+    这里的“新对话”不是 macOS 层面的窗口对象是否刚创建，也不只看 AXTitle。
+    已观察到 Notion AI 在完成回复后，窗口标题仍可能是 `Notion - 命令搜索`，
+    因此 AXTitle 不能单独作为可靠依据。
+
+    当前约定：
+      - 只看窗口/对话框区域。
+      - conversation_state == new_conversation 即为新对话。
+
+    输入框区域是另一块独立区域，不参与这个判断。因为新对话里用户已经开始输入
+    但还没提交时，input_state 会是 typing，此时对话框区域仍然是新对话。
+    """
+    return conv_state == "new_conversation"
+
+
+def public_conversation_state(raw_conv_state: str) -> str:
+    """
+    把内部对话框状态转换成对外输出的 conversation_state。
+
+    对外只暴露三个业务阶段：
+      - new_conversation
+      - generating
+      - complete
+
+    内部仍会区分 attach_to_bottom / detach_to_bottom，用来计算
+    is_attach_to_bottom，以及在自动复制回复时决定是否需要先回到底部。
+    """
+    if raw_conv_state in ("attach_to_bottom", "detach_to_bottom"):
+        return "complete"
+    if raw_conv_state in ("new_conversation", "generating"):
+        return raw_conv_state
+    return "unknown"
+
+
+def is_attach_to_bottom_state(raw_conv_state: str) -> bool:
+    """
+    判断当前对话框区域是否贴住底部。
+
+    这个布尔字段是对外输出用的简化判断：
+      - True:  内部状态 == attach_to_bottom
+      - False: 其他状态，包括 new_conversation / generating / detach_to_bottom / unknown
+    """
+    return raw_conv_state == "attach_to_bottom"
+
+
 def check_ai_state() -> dict:
     """
     检测 Notion AI 窗口的当前状态。
@@ -527,6 +518,9 @@ def check_ai_state() -> dict:
     if error:
         return {
             "success": False,
+            "is_new_conversation": False,
+            "is_attach_to_bottom": False,
+            "window_title": None,
             "conversation_state": "unknown",
             "conversation_state_label": CONVERSATION_STATE_LABELS["unknown"],
             "input_state": "unknown",
@@ -548,8 +542,12 @@ def check_ai_state() -> dict:
         input_elements = elements
         conversation_texts = []
 
-    conv_state, conv_state_elements = conversation_state(conversation_elements, input_elements)
+    raw_conv_state, conv_state_elements = conversation_state(conversation_elements, input_elements)
+    conv_state = public_conversation_state(raw_conv_state)
     inp_state, inp_state_elements = input_state(input_elements, text_area)
+    window_title = ax_str(window, kAXTitleAttribute)
+    is_new_conversation = is_new_conversation_state(conv_state)
+    is_attach_to_bottom = is_attach_to_bottom_state(raw_conv_state)
     from model_selector import current_model
 
     model_info = current_model(input_elements, text_area)
@@ -557,6 +555,9 @@ def check_ai_state() -> dict:
 
     return {
         "success": True,
+        "is_new_conversation": is_new_conversation,
+        "is_attach_to_bottom": is_attach_to_bottom,
+        "window_title": window_title,
         "conversation_state": conv_state,
         "conversation_state_label": CONVERSATION_STATE_LABELS[conv_state],
         "input_state": inp_state,
@@ -621,6 +622,8 @@ def state_key(result: dict) -> tuple:
     """
     return (
         result.get("success"),
+        result.get("is_new_conversation"),
+        result.get("is_attach_to_bottom"),
         result.get("conversation_state"),
         result.get("input_state"),
         result.get("mode_pattern"),
@@ -640,7 +643,8 @@ def format_state_line(result: dict) -> str:
     regions = result.get("regions", {})
     return (
         f"{ts} "
-        f"对话={result['conversation_state_label']}({result['conversation_state']}) | "
+        f"新对话={'是' if result.get('is_new_conversation') else '否'} | "
+        f"贴住底部={'是' if result.get('is_attach_to_bottom') else '否'} | "
         f"输入={result['input_state_label']}({result['input_state']}) | "
         f"模式={result.get('mode_pattern_label')}({result.get('mode_pattern')}) | "
         f"模型={result.get('model') or '无'} | "
@@ -653,7 +657,9 @@ def format_state_line(result: dict) -> str:
 def print_once(result: dict):
     """打印单次人类可读状态。"""
     if result["success"]:
-        print(f"对话框状态: {result['conversation_state_label']} ({result['conversation_state']})")
+        print(f"新对话: {'是' if result.get('is_new_conversation') else '否'}")
+        print(f"贴住底部: {'是' if result.get('is_attach_to_bottom') else '否'}")
+        print(f"窗口标题: {result.get('window_title')}")
         print(f"输入框状态: {result['input_state_label']} ({result['input_state']})")
         print(f"当前模式: {result.get('mode_pattern_label')} ({result.get('mode_pattern')})")
         print(f"当前模型: {result.get('model')}")
@@ -667,6 +673,20 @@ def print_once(result: dict):
         print(f"完成回复信号数量: {regions.get('completed_signal_count')}")
     else:
         print(f"检测失败: {result['error']}")
+
+
+def public_json_result(result: dict) -> dict:
+    """
+    返回命令行 --json 使用的公开结构。
+
+    JSON 保留 conversation_state / conversation_state_label，表示：
+      - new_conversation
+      - generating
+      - complete
+
+    同时额外提供 is_attach_to_bottom，表示完成态是否贴住底部。
+    """
+    return result
 
 
 def main():
@@ -684,7 +704,7 @@ def main():
     result = check_ai_state()
 
     if use_json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(public_json_result(result), ensure_ascii=False, indent=2))
         sys.exit(0 if result["success"] else 1)
 
     if use_once:

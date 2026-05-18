@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""
+向 Notion AI 提问，等待回复完成，然后复制最新回复。
+
+当前流程：
+  1. 用 input_box.py 中已经验证稳定的方法写入问题。
+  2. 按输入区里的 `提交 AI 消息` 按钮提交。
+  3. 等待状态先进入 generating，再等待它退出 generating。
+  4. 如果 conversation_state=complete 但 is_attach_to_bottom=False，
+     先按无 label 的 32x32 回到底部按钮。
+  5. 等到 is_attach_to_bottom=True 后，只按当前底部可见的 `拷贝回复`。
+  6. 读取系统剪贴板，作为最终回复文本。
+
+重要原则：
+  - 生成中即使短暂出现 `拷贝回复`，也不能复制。
+  - 必须等 check_ai_state 确认非 generating 后，再判断 attach/detach。
+  - 复制按钮选最靠下的可见按钮，尽量对应最新回复。
+
+用法：
+    ./venv/bin/python ask_and_copy_reply.py "讲一个故事"
+    ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --new_conversation
+    ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 120
+    ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+
+from check_ai_state import (
+    check_ai_state,
+    element_label,
+    is_back_to_bottom_button,
+)
+from input_box import input_text
+from notion_ax import (
+    bounds_tuple,
+    element_at_position,
+    element_info,
+    get_ai_window_context,
+    get_clipboard_text,
+    kAXErrorSuccess,
+    post_open_ai_shortcut,
+    press,
+    raise_window,
+)
+
+
+SUBMIT_LABEL = "提交 AI 消息"
+NEW_CONVERSATION_LABEL = "开始新对话"
+COPY_REPLY_LABEL = "拷贝回复"
+COPY_SUCCESS_TOAST = "回复已拷贝到剪贴板"
+
+
+def _print(message: str, quiet: bool = False):
+    """按 quiet 参数控制普通日志输出。"""
+    if not quiet:
+        print(message, flush=True)
+
+
+def ensure_ai_window(timeout: float = 5.0) -> tuple[object | None, dict | None, str | None]:
+    """
+    确保 Notion AI 窗口存在，并返回 (app_element, bounds, error)。
+
+    如果窗口没有打开，会发送 Cmd+Shift+J。若窗口本来已经打开，不会重复打开，
+    避免把用户已经打开的窗口关掉或切换掉。
+    """
+    app_element, app, window, bounds, error = get_ai_window_context()
+    if window is not None and bounds is not None:
+        raise_window(window)
+        return app_element, bounds, None
+
+    if error and "未找到 AI 窗口" not in error:
+        return None, None, error
+
+    post_open_ai_shortcut()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.25)
+        app_element, app, window, bounds, error = get_ai_window_context()
+        if window is not None and bounds is not None:
+            raise_window(window)
+            return app_element, bounds, None
+
+    return None, None, "未找到 AI 窗口"
+
+
+def scan_visible_element_objects(step: int = 1, x_range=(0, 100),
+                                 y_range=(0, 100)) -> list[tuple[object, dict]]:
+    """
+    扫描当前 AI 窗口可见元素，返回可直接 AXPress 的元素对象和轻量信息。
+
+    check_ai_state.py 只返回 dict 信息；而这里需要真正按按钮，所以重新扫描并保留
+    AX 元素对象本身。
+    """
+    app_element, bounds, error = ensure_ai_window()
+    if error:
+        return []
+
+    x0, y0, ww, wh = bounds_tuple(bounds)
+    seen = set()
+    elements: list[tuple[object, dict]] = []
+
+    for yr in range(y_range[0], y_range[1] + 1, step):
+        for xr in range(x_range[0], x_range[1] + 1, step):
+            elem = element_at_position(
+                app_element,
+                float(x0 + ww * xr / 100.0),
+                float(y0 + wh * yr / 100.0),
+            )
+            if elem is None:
+                continue
+
+            info = element_info(elem)
+            key = (
+                info["role"],
+                info.get("role_description"),
+                info.get("description"),
+                info.get("title"),
+                info.get("value"),
+                info.get("position"),
+                info.get("size"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            elements.append((elem, info))
+
+    elements.sort(key=lambda item: (
+        item[1]["position"][1] if item[1].get("position") else 0,
+        item[1]["position"][0] if item[1].get("position") else 0,
+        element_label(item[1]),
+    ))
+    return elements
+
+
+def bottom_most(elements: list[tuple[object, dict]]) -> tuple[object, dict] | None:
+    """返回 y 坐标最靠下的元素。"""
+    if not elements:
+        return None
+    return max(
+        elements,
+        key=lambda item: (
+            item[1]["position"][1] if item[1].get("position") else -1,
+            item[1]["position"][0] if item[1].get("position") else -1,
+        ),
+    )
+
+
+def press_labeled_button(label: str, timeout: float = 5.0,
+                         x_range=(0, 100), y_range=(0, 100),
+                         quiet: bool = False) -> dict:
+    """
+    等待并按下指定 label 的按钮。
+
+    用全窗口可见元素扫描，不使用 Tab，避免焦点链跑到别的位置。
+    """
+    deadline = time.time() + timeout
+    last_count = 0
+    while time.time() < deadline:
+        matches = [
+            (elem, info)
+            for elem, info in scan_visible_element_objects(x_range=x_range, y_range=y_range)
+            if element_label(info) == label and "AXPress" in info.get("actions", [])
+        ]
+        last_count = len(matches)
+        target = bottom_most(matches)
+        if target is not None:
+            elem, info = target
+            err = press(elem)
+            if err == kAXErrorSuccess:
+                _print(f"  已按下: {label}", quiet)
+                return {"success": True, "info": info, "error": None}
+            return {
+                "success": False,
+                "info": info,
+                "error": f"AXPressAction 失败 (error_code={err})",
+            }
+        time.sleep(0.2)
+
+    return {
+        "success": False,
+        "info": None,
+        "error": f"等待 {timeout}s 后仍未找到可按的 {label!r}，最后匹配数={last_count}",
+    }
+
+
+def press_back_to_bottom(timeout: float = 5.0, quiet: bool = False) -> dict:
+    """
+    按下对话框里的无 label 32x32 回到底部按钮。
+
+    这个按钮没有文字，必须保存扫描到的 AX 元素对象后直接 press。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        matches = [
+            (elem, info)
+            for elem, info in scan_visible_element_objects()
+            if is_back_to_bottom_button(info)
+        ]
+        target = bottom_most(matches)
+        if target is not None:
+            elem, info = target
+            err = press(elem)
+            if err == kAXErrorSuccess:
+                _print("  已按下回到底部按钮", quiet)
+                return {"success": True, "info": info, "error": None}
+            return {
+                "success": False,
+                "info": info,
+                "error": f"AXPressAction 失败 (error_code={err})",
+            }
+        time.sleep(0.2)
+
+    return {"success": False, "info": None, "error": f"等待 {timeout}s 后仍未找到回到底部按钮"}
+
+
+def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
+    """
+    按下 `开始新对话`，并等待窗口回到新对话空输入状态。
+
+    这个步骤只在用户显式传入 --new_conversation 时执行。默认流程不会自动开新对话，
+    以免打断用户当前正在看的上下文。
+    """
+    pressed = press_labeled_button(
+        NEW_CONVERSATION_LABEL,
+        timeout=5.0,
+        x_range=(75, 100),
+        y_range=(0, 20),
+        quiet=quiet,
+    )
+    if not pressed["success"]:
+        return {
+            "success": False,
+            "state": None,
+            "error": pressed["error"],
+        }
+
+    settled = wait_for_state(
+        lambda r: (
+            r.get("success")
+            and r.get("conversation_state") == "new_conversation"
+            and r.get("input_state") == "empty"
+        ),
+        timeout=timeout,
+        interval=0.4,
+        quiet=quiet,
+        label="新对话空输入状态",
+    )
+    return settled
+
+
+def wait_for_state(predicate, timeout: float, interval: float = 0.5,
+                   quiet: bool = False, label: str = "状态") -> dict:
+    """反复调用 check_ai_state，直到 predicate(result) 为真。"""
+    deadline = time.time() + timeout
+    last_result = None
+    last_key = None
+
+    while time.time() < deadline:
+        result = check_ai_state()
+        last_result = result
+        key = (
+            result.get("success"),
+            result.get("conversation_state"),
+            result.get("input_state"),
+            result.get("input_button_desc"),
+            result.get("error"),
+        )
+        if key != last_key:
+            if result.get("success"):
+                _print(
+                    "  状态: "
+                    f"对话={result.get('conversation_state')} | "
+                    f"输入={result.get('input_state')} | "
+                    f"按钮={result.get('input_button_desc') or '无'}",
+                    quiet,
+                )
+            else:
+                _print(f"  状态检测失败: {result.get('error')}", quiet)
+            last_key = key
+
+        if predicate(result):
+            return {"success": True, "state": result, "error": None}
+        time.sleep(interval)
+
+    return {
+        "success": False,
+        "state": last_result,
+        "error": f"等待 {label} 超时 ({timeout}s)",
+    }
+
+
+def wait_until_generation_finished(timeout: float, quiet: bool = False) -> dict:
+    """
+    等待回复生成完成。
+
+    先尽量确认进入过 generating，再等待退出 generating。这样可以避免提交后还没来得及
+    切换按钮时，被误认为已经完成。
+    """
+    saw_generating = wait_for_state(
+        lambda r: r.get("success") and r.get("conversation_state") == "generating",
+        timeout=min(10.0, timeout),
+        interval=0.35,
+        quiet=quiet,
+        label="进入 generating",
+    )
+    if not saw_generating["success"]:
+        _print("  未观察到 generating，继续等待非生成完成态", quiet)
+
+    remaining = timeout
+    finished = wait_for_state(
+        lambda r: (
+            r.get("success")
+            and r.get("conversation_state") == "complete"
+            and r.get("input_state") != "generating"
+        ),
+        timeout=remaining,
+        interval=0.5,
+        quiet=quiet,
+        label="生成完成并进入稳定对话框状态",
+    )
+    return finished
+
+
+def wait_until_attached(timeout: float, quiet: bool = False,
+                        initial_state: dict | None = None) -> dict:
+    """
+    等待对话框贴住底部。
+
+    若当前 complete 但没有贴住底部，就按回到底部按钮；然后等待贴住底部。
+    """
+    deadline = time.time() + timeout
+    last_state = None
+
+    while time.time() < deadline:
+        if initial_state is not None:
+            result = initial_state
+            initial_state = None
+        else:
+            result = check_ai_state()
+        if not result.get("success"):
+            last_state = result
+            time.sleep(0.3)
+            continue
+
+        last_state = result
+        if (
+            result.get("conversation_state") == "complete"
+            and result.get("is_attach_to_bottom")
+        ):
+            return {"success": True, "state": result, "error": None}
+
+        if (
+            result.get("conversation_state") == "complete"
+            and not result.get("is_attach_to_bottom")
+        ):
+            pressed = press_back_to_bottom(timeout=2.0, quiet=quiet)
+            if not pressed["success"]:
+                return {"success": False, "state": result, "error": pressed["error"]}
+            time.sleep(0.5)
+            continue
+
+        time.sleep(0.3)
+
+    return {
+        "success": False,
+        "state": last_state,
+        "error": f"等待 is_attach_to_bottom=True 超时 ({timeout}s)",
+    }
+
+
+def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dict:
+    """
+    复制当前底部可见的最新回复。
+
+    调用前应已经确认：
+      - conversation_state 不是 generating
+      - conversation_state 是 complete
+      - is_attach_to_bottom 是 True
+    """
+    before = get_clipboard_text()
+    pressed = press_labeled_button(
+        COPY_REPLY_LABEL,
+        timeout=timeout,
+        x_range=(0, 45),
+        y_range=(0, 85),
+        quiet=quiet,
+    )
+    if not pressed["success"]:
+        return {"success": False, "text": "", "error": pressed["error"]}
+
+    deadline = time.time() + 5.0
+    text = get_clipboard_text()
+    while time.time() < deadline:
+        text = get_clipboard_text()
+        if text and text != before:
+            break
+        time.sleep(0.2)
+
+    if not text:
+        return {"success": False, "text": "", "error": "复制后剪贴板为空"}
+    if text == before:
+        return {
+            "success": False,
+            "text": text,
+            "error": "复制后剪贴板没有变化，可能仍是提交问题时的旧剪贴板内容",
+        }
+
+    return {"success": True, "text": text, "copy_button_info": pressed["info"], "error": None}
+
+
+def ask_and_copy_reply(question: str, timeout: float = 120.0,
+                       new_conversation: bool = False,
+                       quiet: bool = False) -> dict:
+    """
+    完整执行：输入问题、提交、等待完成、贴底、复制回复。
+    """
+    started_at = time.time()
+    _print("===== 提问并复制回复 =====", quiet)
+
+    app_element, bounds, error = ensure_ai_window()
+    if error:
+        return {"success": False, "text": "", "error": error}
+
+    step_number = 1
+    if new_conversation:
+        _print(f"{step_number}. 开始新对话", quiet)
+        started = start_new_conversation(timeout=10.0, quiet=quiet)
+        if not started["success"]:
+            return {
+                "success": False,
+                "text": "",
+                "step": "new_conversation",
+                "error": started["error"],
+            }
+        app_element, bounds, error = ensure_ai_window()
+        if error:
+            return {"success": False, "text": "", "step": "new_conversation", "error": error}
+        step_number += 1
+
+    _print(f"{step_number}. 写入问题", quiet)
+    typed = input_text(question, replace_existing=True, app_element=app_element, bounds=bounds)
+    if not typed["success"]:
+        return {"success": False, "text": "", "step": "input", "error": typed["error"]}
+    step_number += 1
+
+    _print(f"{step_number}. 提交问题", quiet)
+    submitted = press_labeled_button(
+        SUBMIT_LABEL,
+        timeout=5.0,
+        x_range=(70, 100),
+        y_range=(82, 100),
+        quiet=quiet,
+    )
+    if not submitted["success"]:
+        return {"success": False, "text": "", "step": "submit", "error": submitted["error"]}
+    step_number += 1
+
+    _print(f"{step_number}. 等待生成完成", quiet)
+    finished = wait_until_generation_finished(timeout=timeout, quiet=quiet)
+    if not finished["success"]:
+        return {"success": False, "text": "", "step": "wait_finished", "error": finished["error"]}
+    step_number += 1
+
+    _print(f"{step_number}. 确保贴住底部", quiet)
+    attached = wait_until_attached(
+        timeout=30.0,
+        quiet=quiet,
+        initial_state=finished.get("state"),
+    )
+    if not attached["success"]:
+        return {"success": False, "text": "", "step": "attach", "error": attached["error"]}
+    step_number += 1
+
+    _print(f"{step_number}. 复制最新回复", quiet)
+    copied = copy_latest_visible_reply(timeout=10.0, quiet=quiet)
+    if not copied["success"]:
+        return {"success": False, "text": "", "step": "copy", "error": copied["error"]}
+
+    elapsed = round(time.time() - started_at, 2)
+    return {
+        "success": True,
+        "text": copied["text"],
+        "elapsed": elapsed,
+        "final_state": attached["state"],
+        "copy_button_info": copied.get("copy_button_info"),
+        "error": None,
+    }
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="向 Notion AI 提问并复制最终回复")
+    parser.add_argument("question", help="要提交给 Notion AI 的问题")
+    parser.add_argument("--timeout", "-t", type=float, default=120.0, help="等待生成完成的最长秒数")
+    parser.add_argument(
+        "--new_conversation",
+        action="store_true",
+        help="打开窗口后先按 `开始新对话`，确认进入新对话空输入状态后再提问",
+    )
+    parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    parser.add_argument("--quiet", action="store_true", help="减少过程日志")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    result = ask_and_copy_reply(
+        args.question,
+        timeout=args.timeout,
+        new_conversation=args.new_conversation,
+        quiet=args.quiet or args.json,
+    )
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if result["success"] else 1
+
+    if result["success"]:
+        print(f"\n完成，耗时 {result['elapsed']}s。")
+        print("\n--- AI 回复 ---")
+        print(result["text"])
+        return 0
+
+    print(f"\n失败: {result.get('error')}")
+    if result.get("step"):
+        print(f"失败步骤: {result['step']}")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

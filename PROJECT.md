@@ -43,6 +43,7 @@
 ```text
 .
 ├── PROJECT.md
+├── AI_TOOL_USAGE.md
 ├── PROBLEM_SOLUTIONS.md
 ├── AX_ELEMENTS.md
 ├── notion_ax.py
@@ -52,7 +53,7 @@
 ├── input_box.py
 ├── model_selector.py
 ├── check_ai_state.py
-├── copy_reply.py
+├── ask_and_copy_reply.py
 ├── watch_focus.py
 ├── .claude/settings.local.json
 └── venv/
@@ -61,6 +62,17 @@
 `venv/` 是本地 Python 虚拟环境，不属于项目逻辑。
 
 ## 文件说明
+
+### `AI_TOOL_USAGE.md`
+
+给 OpenClaude、Claude Code、Codex 等 AI/编码代理读取的工具使用说明。
+
+重点说明：
+
+- 首选使用 `ask_and_copy_reply.py`
+- 如何使用 `--new_conversation` / `--timeout` / `--json`
+- 如何解析 `success`、`text`、`conversation_state`、`is_attach_to_bottom`
+- 哪些底层脚本不建议 AI 直接调用
 
 ### `PROBLEM_SOLUTIONS.md`
 
@@ -342,6 +354,8 @@
 
 输出核心字段：
 
+- `is_new_conversation`：对话框区域是否仍是新对话
+- `is_attach_to_bottom`：完成态是否贴住底部
 - `conversation_state`：对话框状态
 - `input_state`：输入框状态
 - `model`：当前模型名
@@ -350,9 +364,13 @@
 
 - `new_conversation`：对话框区域只有初始问候语，且没有完成回复信号按钮
 - `generating`：输入框区域出现 `停止 AI 消息`
-- `detach_to_bottom`：对话框区域出现无 label 的 32x32 回到底部按钮
-- `attach_to_bottom`：未生成、没有回到底部按钮，且出现完成态操作按钮
+- `complete`：AI 回复已完成
 - `unknown`：无法判断为上述状态
+
+`is_attach_to_bottom` 取值：
+
+- `true`：完成态操作按钮可见，且没有出现无 label 的 32x32 回到底部按钮
+- `false`：新对话、生成中、脱离底部或未知状态
 
 `input_state` 取值：
 
@@ -370,8 +388,8 @@
 - 对话框状态判断优先级：
   - `generating`：输入框区域出现 `停止 AI 消息`
   - `new_conversation`：对话框区域中 `AXStaticText / roleDesc=文本` 数量为 1，唯一文本为 `在下乐意为你效劳。`，且没有完成态操作按钮
-  - `detach_to_bottom`：对话框区域出现无 label 的 32x32 回到底部按钮
-  - `attach_to_bottom`：没有生成、没有回到底部按钮，且出现完成态操作按钮
+  - `complete`：出现完成态操作按钮，或内部检测到脱离底部的回到底部按钮
+- 贴底状态单独用 `is_attach_to_bottom` 输出；脱离底部时 `conversation_state=complete` 且 `is_attach_to_bottom=false`
 - 当前模型通过输入框区域中的模型选择 `AXPopUpButton` 检测，并返回为 `model`
 - 完成态操作按钮包括：`拷贝回复`、`保存到私人页面`、`提供正面反馈`、`提供负面反馈`
 - 右下角输入按钮文字仍会作为 `input_button_desc` 原始信息返回，但不参与 `typing` 判断，也不主导对话框状态
@@ -381,29 +399,26 @@
 - 有时输入框 `AXValue` 为空，但状态按钮仍可能显示 `提交 AI 消息`
 - 因此右下角按钮只能代表 UI 按钮状态，不等同于“输入框一定有可提交文本”
 
-### `copy_reply.py`
+### `ask_and_copy_reply.py`
 
-目标是等待并复制 Notion AI 最新回复；当前实现只会复制搜索到的
-`拷贝回复` 按钮对应内容，尚不能保证一定是最新回复。
+目标是完成完整闭环：输入问题、提交、等待生成完成、必要时回到底部、
+复制当前最新回复。
 
 命令：
 
 ```bash
-./venv/bin/python copy_reply.py
-./venv/bin/python copy_reply.py --timeout 60
+./venv/bin/python ask_and_copy_reply.py "请讲一个故事"
+./venv/bin/python ask_and_copy_reply.py "请讲一个故事" --new_conversation --timeout 120
 ```
 
 流程：
 
-1. 搜索 `拷贝回复`
-2. 找到后执行 `AXPressAction`
-3. 从系统剪贴板读取回复文本
-
-当前限制：
-
-- 只有当 Notion AI 已经完成生成，并且 UI 中出现 `拷贝回复` 时才可用
-- 当前搜索策略可能复制历史回复，不能保证命中最新回复
-- 当前输入发送能力未稳定前，无法完整验证“输入 -> 生成 -> 复制”的闭环
+1. 使用 `input_box.py` 的真实插入点输入方法写入问题
+2. 按 `提交 AI 消息`
+3. 等待 `conversation_state=complete`
+4. 如果 `is_attach_to_bottom=false`，先按 32x32 回到底部按钮
+5. 按底部可见的 `拷贝回复`
+6. 等待剪贴板从旧值变化为新回复
 
 ### `watch_focus.py`
 
