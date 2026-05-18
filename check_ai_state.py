@@ -295,6 +295,56 @@ def is_static_text_near_popup_button(info: dict, input_elements: list[dict]) -> 
     return False
 
 
+def current_mode_pattern(input_elements: list[dict], text_area: dict | None) -> str:
+    """
+    检测当前 AI 交互模式。
+
+    Notion AI 有三种模式，但 UI 上只有"询问模式"和"计划模式"会显示标签。
+    "默认模式"不显示标签。因此：
+      - 找到 "询问模式" → 返回 "ask"
+      - 找到 "计划模式" → 返回 "plan"
+      - 都没找到     → 返回 "default"
+
+    模式标签是输入框正下方很近位置的 AXStaticText / roleDesc=文本。
+    利用 text_area 底部 y 坐标做空间约束，避免远处文字误匹配。
+    """
+    if text_area is None:
+        return "default"
+
+    ta_pos = text_area.get("position")
+    ta_size = text_area.get("size")
+    if not ta_pos or not ta_size:
+        return "default"
+
+    ta_bottom = ta_pos[1] + ta_size[1]
+
+    for info in input_elements:
+        if info["role"] != "AXStaticText" or info.get("role_description") != "文本":
+            continue
+        pos = info.get("position")
+        if not pos:
+            continue
+
+        # 只收输入框正下方 0~20px 范围内的元素
+        dy = pos[1] - ta_bottom
+        if not (0 <= dy <= 20):
+            continue
+
+        value = info.get("value", "")
+        if value == "询问模式":
+            return "ask"
+        if value == "计划模式":
+            return "plan"
+    return "default"
+
+
+MODE_PATTERN_LABELS = {
+    "default": "默认模式",
+    "ask": "询问模式",
+    "plan": "计划模式",
+}
+
+
 def input_static_texts(input_elements: list[dict], text_area: dict | None) -> list[dict]:
     """
     返回实际输入框 bounds 内的静态文本。
@@ -549,6 +599,7 @@ def check_ai_state() -> dict:
     conv_state, conv_state_elements = conversation_state(conversation_elements, input_elements)
     inp_state, inp_state_elements = input_state(input_elements, text_area)
     model_info = current_model(input_elements)
+    mode_pat = current_mode_pattern(input_elements, text_area)
 
     return {
         "success": True,
@@ -556,6 +607,8 @@ def check_ai_state() -> dict:
         "conversation_state_label": CONVERSATION_STATE_LABELS[conv_state],
         "input_state": inp_state,
         "input_state_label": INPUT_STATE_LABELS[inp_state],
+        "mode_pattern": mode_pat,
+        "mode_pattern_label": MODE_PATTERN_LABELS.get(mode_pat, mode_pat),
         "model": model_info["name"],
         "model_info": model_info,
         "input_button_desc": input_button_desc,
@@ -620,6 +673,7 @@ def main():
         if result["success"]:
             print(f"对话框状态: {result['conversation_state_label']} ({result['conversation_state']})")
             print(f"输入框状态: {result['input_state_label']} ({result['input_state']})")
+            print(f"当前模式: {result.get('mode_pattern_label')} ({result.get('mode_pattern')})")
             print(f"当前模型: {result.get('model')}")
             print(f"输入按钮: {result.get('input_button_desc')}")
             regions = result.get("regions", {})

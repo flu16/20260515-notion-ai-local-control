@@ -43,12 +43,13 @@
 ```text
 .
 ├── PROJECT.md
+├── PROBLEM_SOLUTIONS.md
 ├── AX_ELEMENTS.md
 ├── notion_ax.py
 ├── open_ai_window.py
 ├── search_element.py
 ├── click_element.py
-├── type_text.py
+├── input_box.py
 ├── check_ai_state.py
 ├── copy_reply.py
 ├── watch_focus.py
@@ -59,6 +60,24 @@
 `venv/` 是本地 Python 虚拟环境，不属于项目逻辑。
 
 ## 文件说明
+
+### `PROBLEM_SOLUTIONS.md`
+
+记录项目关键难点、失败路径、误判原因和最终解决方案。
+
+主要用于：
+
+- 保存已经验证失败的路径，避免重复实验
+- 记录真正稳定的判断信号
+- 说明问题为什么难、最终突破点在哪里
+- 给后续修复、测试和重构提供依据
+
+当前已记录：
+
+- 不使用鼠标、也不使用 `Shift+Tab` 的输入框真实写入方案
+- `AXFocusedUIElement == AXTextArea` 的假焦点问题
+- `AXInsertionPointLineNumber` / `AXSelectedText` 对真实插入点的判断价值
+- `AXSelectedTextRange=(0,0)` 激活真实输入的解决方法
 
 ### `AX_ELEMENTS.md`
 
@@ -167,6 +186,42 @@
 - `--list --region X1,Y1,X2,Y2` 只扫描窗口百分比区域
 - `--step N` 控制扫描密度，数字越小越密，越慢也越稳
 
+重要说明：
+
+`search_element.py` 默认输出的是轻量调试字段，不是完整 AX 属性列表。
+
+默认字段包括：
+
+- `role`
+- `roleDesc`
+- `description`
+- `title`
+- `value`
+- `position`
+- `size`
+- `actions`
+
+这些字段适合日常定位按钮、菜单、正文、输入框和无 label 图标，输出短、速度快。
+
+但一个 AX 元素实际可能支持更多属性，需要通过
+`AXUIElementCopyAttributeNames(element)` 单独枚举。例如输入框还支持：
+
+- `AXFocused`
+- `AXSelectedText`
+- `AXSelectedTextRange`
+- `AXVisibleCharacterRange`
+- `AXNumberOfCharacters`
+- `AXInsertionPointLineNumber`
+
+这些完整属性不默认展开，原因是：
+
+- 每个元素属性很多，`--list` 输出会非常长
+- 有些属性读取会失败、变慢，或返回 `AXUIElement` / `AXValue` 对象
+- 日常搜索通常只需要轻量字段
+
+因此，不要把 `--list` 的输出理解为“这个元素只有这些属性”。
+遇到疑难问题时，应使用或新增完整属性查看能力。
+
 `--list` 的 label 来源是：
 
 - `AXDescription`
@@ -205,34 +260,35 @@
 
 不要用 `提交 AI 消息` 作为点击功能测试目标，除非输入框里已经有真实可提交文本。
 
-### `type_text.py`
+### `input_box.py`
 
 负责读取、设置和清空 Notion AI 输入框。
 
 命令：
 
 ```bash
-./venv/bin/python type_text.py --read
-./venv/bin/python type_text.py "你好"
-./venv/bin/python type_text.py --clear
+./venv/bin/python input_box.py --read
+./venv/bin/python input_box.py "你好"
+./venv/bin/python input_box.py --clear
 ```
 
 当前实现：
 
 - 定位输入框 `AXTextArea`
 - 对输入框设置 `AXFocusedAttribute=True`
-- 写入系统剪贴板
-- 发送 `Cmd+V`
+- 设置 `AXSelectedTextRange=(0,0)`，创建真实插入点
+- 替换已有文本时，读取 `AXNumberOfCharacters`，再设置 `AXSelectedTextRange=(0, 字符数)`
+- 写入系统剪贴板并发送 `Cmd+V`
 - 读取 `AXValue` 验证结果
 
 当前限制：
 
 - `--read` 可以读取输入框 `AXValue`
-- 文本写入在当前 Notion/Electron 环境下不稳定或失败
-- 已测试过 `AXValue`、`AXSelectedText`、`AXSelectedTextRange`、`AXReplaceRangeWithText` 等纯 AX 写入路径，返回值可能成功但实际内容不变
-- 鼠标点击输入框后再 `Cmd+V` 曾被实验证实可行，但违反项目原则，不能接入程序
+- 不能把 `AXFocusedUIElement == AXTextArea` 当作真实可输入；还要看 `AXInsertionPointLineNumber`
+- 不能直接写 `AXValue`，那只是 AX 层假写入，不等于真实输入
+- 不使用鼠标，不使用 `Shift+Tab`
 
-后续研究重点：寻找不依赖鼠标事件的真实编辑上下文激活方法。
+当前稳定输入路径详见 `PROBLEM_SOLUTIONS.md`。
 
 ### `check_ai_state.py`
 
@@ -356,14 +412,14 @@
 - 搜索按钮：`search_element.py "提供背景信息"`
 - 点击 `提供背景信息` 并打开菜单：`click_element.py "提供背景信息"`
 - 列出菜单态的 title-only 菜单项：`search_element.py --list`
-- 读取输入框内容：`type_text.py --read`
+- 读取输入框内容：`input_box.py --read`
+- 无鼠标输入文本：`input_box.py "..."`
 - 监听焦点元素并同时看到 `AXTitle` / `AXDescription`：`watch_focus.py`
 
 ### 未稳定或失败
 
-- 无鼠标输入文本：`type_text.py "..."` 当前不能可靠写入 Notion AI 输入框
-- `提交 AI 消息` 的实际提交：依赖真实输入文本，不能作为通用点击测试
-- 完整问答闭环：受输入写入问题阻塞
+- `提交 AI 消息` 的实际提交：不要作为通用点击测试目标，只应在明确已有真实可提交文本时使用
+- 完整问答闭环：还需要继续验证提交、生成、复制最新回复的串联稳定性
 
 ## 常用调试流程
 

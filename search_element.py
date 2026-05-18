@@ -17,6 +17,28 @@
   2. 加 --include-empty 后，也列出无 label 元素，显示为 <empty>。
   3. 加 --region 后，只扫描窗口百分比区域，适合找底部按钮或菜单附近元素。
 
+重要说明：
+  本脚本默认展示的是“轻量调试字段”，不是元素支持的全部 AX 属性。
+  轻量字段包括 role、roleDesc、description、title、value、position、size、actions。
+  这些字段适合日常找按钮、菜单、正文和无 label 图标，输出短、速度快。
+
+  但复杂元素还可能支持大量隐藏属性，例如输入框上的：
+    AXFocused
+    AXSelectedText
+    AXSelectedTextRange
+    AXVisibleCharacterRange
+    AXNumberOfCharacters
+    AXInsertionPointLineNumber
+
+  这些完整属性需要通过 AXUIElementCopyAttributeNames(element) 单独枚举。
+  它们不默认展开，因为：
+    1. 每个元素属性很多，--list 输出会被淹没。
+    2. 有些属性读取会失败、变慢，或返回 AXUIElement/AXValue 这类对象。
+    3. 日常搜索通常只需要轻量字段。
+
+  因此，不要把 --list 的输出理解为“这个元素只有这些属性”。
+  遇到疑难问题时，应增加专门的完整属性查看能力。
+
 用法：
     ./venv/bin/python search_element.py "提交 AI 消息"
     ./venv/bin/python search_element.py "添加图片、PDF 或 CSV"

@@ -71,7 +71,7 @@ https://github.com/flu16/20260515-notion-ai-local-control
 - `open_ai_window.py`：打开/检测 Notion AI 窗口
 - `search_element.py`：搜索元素、列元素、区域扫描
 - `click_element.py`：对指定元素执行 AXPress
-- `type_text.py`：读/写输入框，目前写入不稳定
+- `input_box.py`：读/写/清空输入框，使用 AXSelectedTextRange 激活真实插入点
 - `check_ai_state.py`：扫描右下角状态按钮
 - `copy_reply.py`：复制回复，当前策略还需要改进
 - `watch_focus.py`：监听焦点 AX 属性
@@ -171,18 +171,38 @@ https://github.com/flu16/20260515-notion-ai-local-control
 
 ## 关键实验结果
 
-### 1. 文本输入未打通
+### 1. 文本输入已打通
 
-`type_text.py --read` 可以读取输入框。
+`input_box.py --read` 可以读取输入框。
 
-但 `type_text.py "..."` 在当前 Notion/Electron 环境下无法可靠写入。
+`input_box.py "..."` 当前使用稳定路径写入输入框：
+
+```text
+AXFocusedAttribute=True
+AXSelectedTextRange=(0,0)
+Cmd+V
+AXValue 验证
+```
+
+替换已有文本时不使用 `Cmd+A`，而是：
+
+```text
+读取 AXNumberOfCharacters
+AXSelectedTextRange=(0, 字符数)
+Cmd+V 替换选区
+```
+
+关键判断信号：
+
+- 假焦点：`AXInsertionPointLineNumber = 9223372036854775807`
+- 真插入点：`AXInsertionPointLineNumber = 0`，`AXSelectedText = ""`
 
 已测试失败或不可靠的方式：
 
 - `AXFocusedAttribute=True` 后 `Cmd+V`
 - `AXValue`
-- `AXSelectedText`
-- `AXSelectedTextRange`
+- 单独 `AXSelectedText`
+- 只设置 `AXSelectedTextRange` 但不创建真实插入点/不正确管理选区
 - `AXReplaceRangeWithText`
 - `AXFocused=False`
 
@@ -336,7 +356,7 @@ press 回到底部按钮后，曾看到底部操作区：
 语法检查：
 
 ```bash
-./venv/bin/python -m py_compile notion_ax.py open_ai_window.py search_element.py click_element.py type_text.py check_ai_state.py copy_reply.py watch_focus.py
+./venv/bin/python -m py_compile notion_ax.py open_ai_window.py search_element.py click_element.py input_box.py check_ai_state.py copy_reply.py watch_focus.py
 ```
 
 ## 注意事项
