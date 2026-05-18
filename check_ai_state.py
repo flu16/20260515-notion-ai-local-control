@@ -2,10 +2,29 @@
 """
 判断 Notion AI 窗口当前所处的状态。
 
-三种互斥状态：
-  - idle:       输入框为空，按钮为 "输入一条消息"
-  - ready:      已输入内容，按钮为 "提交 AI 消息"
-  - generating: AI 正在生成，按钮为 "停止 AI 消息"
+当前状态模型：
+  - conversation_state: 对话框状态。
+  - input_state:        输入框状态。
+  - model:              当前模型名。
+
+核心区域划分：
+  - 对话框区域：AXTextArea 上方的内容区，用来判断 new_conversation、回复内容、回复操作按钮。
+  - 输入框区域：AXTextArea 及其下方工具栏，用来判断输入框和值、提交/停止按钮等。
+
+对话框滚动/生成状态：
+  - new_conversation:             对话框区域只有一句初始问候文本，没有完成态按钮。
+  - generating:        输入框区域出现 "停止 AI 消息"，说明 AI 正在生成。
+  - detach_to_bottom:  对话框区域出现无 label 的 32x32 回到底部按钮，说明当前未贴住底部。
+  - attach_to_bottom:  未生成、未出现回到底部按钮，且出现完成态操作按钮。
+
+输入框状态：
+  - generating: 输入框区域出现 "停止 AI 消息"，说明问题已经提交，AI 正在生成。
+  - typing:     未生成，且 AXTextArea.value 非空或输入框区域出现草稿文本。
+  - empty:      未生成，且没有草稿/提交信号。
+
+模型检测：
+  - 当前模型由输入框区域里的模型选择 AXPopUpButton 暴露。
+  - 该按钮的 AXDescription 通常就是模型名，例如 `Opus 4.7` / `GPT-5.5`。
 
 用法：
     ./venv/bin/python check_ai_state.py
@@ -19,32 +38,467 @@ from notion_ax import (
     ax_str,
     bounds_tuple,
     element_at_position,
+    element_info,
     get_ai_window_context,
     kAXDescriptionAttribute,
 )
 
 
-STATE_BUTTONS = {
-    "idle": "输入一条消息",
-    "ready": "提交 AI 消息",
-    "generating": "停止 AI 消息",
+STOP_GENERATING_BUTTON_DESC = "停止 AI 消息"
+SUBMIT_BUTTON_DESC = "提交 AI 消息"
+INPUT_BUTTON_DESCRIPTIONS = {
+    STOP_GENERATING_BUTTON_DESC,
+    SUBMIT_BUTTON_DESC,
 }
 
 STATE_LABELS = {
-    "idle": "等待输入",
-    "ready": "等待提交",
+    "new_conversation": "新对话",
     "generating": "正在生成",
+    "detach_to_bottom": "脱离底部",
+    "attach_to_bottom": "贴住底部",
     "unknown": "未知",
+}
+
+NEW_CONVERSATION_GREETINGS = {
+    "在下乐意为你效劳。",
+}
+
+COMPLETED_SIGNAL_LABELS = {
+    "拷贝回复",
+    "保存到私人页面",
+    "提供正面反馈",
+    "提供负面反馈",
+}
+
+CONVERSATION_STATE_LABELS = {
+    "new_conversation": "新对话",
+    "generating": "正在生成",
+    "attach_to_bottom": "贴住底部",
+    "detach_to_bottom": "脱离底部",
+    "unknown": "未知",
+}
+
+INPUT_STATE_LABELS = {
+    "empty": "空输入",
+    "typing": "正在输入",
+    "generating": "已提交生成中",
+    "unknown": "未知",
+}
+
+IGNORED_INPUT_STATIC_TEXT_VALUES = {
+    "默认模式",
+    "询问模式",
+    "计划模式",
 }
 
 SCAN_Y_RANGE = (85, 98)
 SCAN_X_RANGE = (70, 98)
 SCAN_STEP = 2
+FULL_SCAN_STEP = 1
 
 
-def scan_for_state_button(app_element, bounds: dict):
+def element_label(info: dict) -> str:
     """
-    在窗口右下角区域扫描状态按钮。
+    返回一个元素最适合用于识别的文字。
+
+    目标搜索里已经确认 Notion 元素的文字可能来自：
+    - AXDescription: 常见于按钮
+    - AXTitle: 常见于菜单项
+    - AXValue: 常见于正文、问候语、用户消息
+    """
+    return info.get("description") or info.get("title") or info.get("value") or ""
+
+
+def scan_visible_elements(app_element, bounds: dict, step: int = FULL_SCAN_STEP) -> list[dict]:
+    """
+    扫描当前 AI 窗口可见元素，并按稳定属性去重。
+
+    这是状态判断的基础数据来源。它比只扫右下角按钮更完整，
+    能同时看见对话框区域和输入框区域中的元素。
+    """
+    x0, y0, ww, wh = bounds_tuple(bounds)
+    seen = set()
+    elements = []
+
+    for yr in range(0, 101, step):
+        for xr in range(0, 101, step):
+            elem = element_at_position(
+                app_element,
+                float(x0 + ww * xr / 100.0),
+                float(y0 + wh * yr / 100.0),
+            )
+            if elem is None:
+                continue
+
+            info = element_info(elem)
+            key = (
+                info["role"],
+                info.get("role_description"),
+                info["description"],
+                info["title"],
+                info["value"],
+                info["position"],
+                info["size"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            elements.append(info)
+
+    elements.sort(key=lambda e: (
+        e["position"][1] if e.get("position") else 0,
+        e["position"][0] if e.get("position") else 0,
+        element_label(e),
+    ))
+    return elements
+
+
+def find_input_text_area(elements: list[dict]) -> dict | None:
+    """
+    找当前窗口里的输入框。
+
+    Notion AI 浮窗目前只观察到一个主要 AXTextArea。若未来出现多个，
+    取 y 坐标最大的那个，通常就是底部输入框。
+    """
+    text_areas = [
+        info for info in elements
+        if info["role"] == "AXTextArea" and info.get("position")
+    ]
+    if not text_areas:
+        return None
+    text_areas.sort(key=lambda e: (e["position"][1], e["position"][0]))
+    return text_areas[-1]
+
+
+def split_elements_by_input_area(elements: list[dict], text_area: dict) -> tuple[list[dict], list[dict]]:
+    """
+    按输入框 y 坐标把窗口拆成两个逻辑区域。
+
+    - 对话框区域：元素 position.y < AXTextArea.y
+    - 输入框区域：元素 position.y >= AXTextArea.y
+
+    这个划分不依赖窗口固定坐标，窗口移动后仍然有效。
+    """
+    text_area_y = text_area["position"][1]
+    conversation_elements = []
+    input_elements = []
+
+    for info in elements:
+        pos = info.get("position")
+        if pos is not None and pos[1] < text_area_y:
+            conversation_elements.append(info)
+        else:
+            input_elements.append(info)
+
+    return conversation_elements, input_elements
+
+
+def conversation_static_texts(conversation_elements: list[dict]) -> list[dict]:
+    """
+    返回对话框区域里的正文类文本元素。
+
+    new_conversation 页面目前只有一个对话框文本：`在下乐意为你效劳。`。
+    用户问题和 AI 回复也会以 AXStaticText / roleDesc=文本 暴露，
+    因此一旦有真实对话，这里的数量和内容会明显变化。
+    """
+    return [
+        info for info in conversation_elements
+        if info["role"] == "AXStaticText" and info.get("role_description") == "文本"
+    ]
+
+
+def completed_signal_elements(elements: list[dict]) -> list[dict]:
+    """
+    查找已经完成回复的操作按钮信号。
+
+    这些按钮出现时，页面不应再被判为 new_conversation。
+    """
+    return [
+        info for info in elements
+        if element_label(info) in COMPLETED_SIGNAL_LABELS
+    ]
+
+
+def is_stop_generating_button(info: dict) -> bool:
+    """
+    判断是否是生成中的停止按钮。
+
+    该按钮通常在输入框区域右下角，AXDescription 为 `停止 AI 消息`。
+    """
+    return element_label(info) == STOP_GENERATING_BUTTON_DESC
+
+
+def element_contains(container: dict, child: dict) -> bool:
+    """
+    判断 child 的左上角是否落在 container 的 bounds 内。
+
+    用于识别模型选择按钮内部的静态文本，例如 `Opus 4.7` / `GPT-5.5`。
+    这类文本不属于输入草稿。
+    """
+    c_pos = container.get("position")
+    c_size = container.get("size")
+    child_pos = child.get("position")
+    if not c_pos or not c_size or not child_pos:
+        return False
+
+    cx, cy = c_pos
+    cw, ch = c_size
+    px, py = child_pos
+    return cx <= px <= cx + cw and cy <= py <= cy + ch
+
+
+def is_static_text_inside_popup_button(info: dict, input_elements: list[dict]) -> bool:
+    """
+    判断静态文本是否属于输入区里的弹出按钮。
+
+    模型选择器会同时暴露：
+      - AXPopUpButton description=<模型名>
+      - AXStaticText value=<模型名>
+
+    其中 AXStaticText 只是按钮内部文字，不应被当成输入草稿。
+    """
+    popup_buttons = [
+        elem for elem in input_elements
+        if elem["role"] == "AXPopUpButton"
+    ]
+    return any(element_contains(button, info) for button in popup_buttons)
+
+
+def is_static_text_near_popup_button(info: dict, input_elements: list[dict]) -> bool:
+    """
+    判断静态文本是否是弹出按钮的菜单/提示文本。
+
+    模型选择器展开或悬停时，可能在按钮上方暴露 `更改 AI 模型`
+    和当前模型名。这些文本不在按钮 bounds 内，但 x 位置和按钮重叠，
+    且距离按钮很近，不应算作输入草稿。
+    """
+    pos = info.get("position")
+    if not pos:
+        return False
+
+    px, py = pos
+    for button in input_elements:
+        if button["role"] != "AXPopUpButton":
+            continue
+        b_pos = button.get("position")
+        b_size = button.get("size")
+        if not b_pos or not b_size:
+            continue
+
+        bx, by = b_pos
+        bw, bh = b_size
+        overlaps_x = bx <= px <= bx + bw
+        near_y = by - 80 <= py <= by + bh + 20
+        if overlaps_x and near_y:
+            return True
+
+    return False
+
+
+def input_static_texts(input_elements: list[dict], text_area: dict | None) -> list[dict]:
+    """
+    返回实际输入框 bounds 内的静态文本。
+
+    输入框里的草稿文本有时不会出现在 AXTextArea.value，
+    而会暴露为 AXStaticText / roleDesc=文本。
+
+    只统计落在 AXTextArea 自身矩形内的静态文本。底部工具栏、模型名、
+    模式标签、回复正文等即使位于 AXTextArea.y 以下，也不属于草稿。
+    """
+    if text_area is None:
+        return []
+
+    texts = []
+    for info in input_elements:
+        if info["role"] != "AXStaticText" or info.get("role_description") != "文本":
+            continue
+        value = info.get("value", "")
+        if not value:
+            continue
+        if not element_contains(text_area, info):
+            continue
+        texts.append(info)
+    return texts
+
+
+def current_model(input_elements: list[dict]) -> dict:
+    """
+    检测当前使用的模型。
+
+    模型选择器目前暴露为输入框区域中的 AXPopUpButton：
+      - role=AXPopUpButton
+      - roleDesc=弹出式按钮
+      - description=<模型名>
+
+    同一区域还有其它 AXPopUpButton，例如 `提供背景信息`、`设置`。
+    模型按钮的稳定特征是：内部包含一个同名 AXStaticText。
+    """
+    popup_buttons = [
+        info for info in input_elements
+        if info["role"] == "AXPopUpButton" and element_label(info)
+    ]
+    static_texts = [
+        info for info in input_elements
+        if info["role"] == "AXStaticText" and info.get("role_description") == "文本"
+    ]
+
+    for button in popup_buttons:
+        label = element_label(button)
+        for text in static_texts:
+            if text.get("value") == label and element_contains(button, text):
+                return {
+                    "name": label,
+                    "element": {
+                        "role": button["role"],
+                        "role_description": button.get("role_description"),
+                        "label": label,
+                        "position": button.get("position"),
+                        "size": button.get("size"),
+                        "actions": button.get("actions"),
+                    },
+                    "text_element": {
+                        "role": text["role"],
+                        "role_description": text.get("role_description"),
+                        "value": text.get("value"),
+                        "position": text.get("position"),
+                        "size": text.get("size"),
+                    },
+                }
+
+    return {
+        "name": None,
+        "element": None,
+        "text_element": None,
+    }
+
+
+def input_state(input_elements: list[dict], text_area: dict | None) -> tuple[str, list[dict]]:
+    """
+    判断输入框状态。
+
+    判断优先级：
+      1. generating: 输入框区域出现 `停止 AI 消息`
+      2. typing: 未生成，且 AXTextArea.value 非空，或输入框区域存在草稿 AXStaticText
+      3. empty: 未生成，且没有上述输入信号
+
+    注意：`提交 AI 消息` 在 empty 和 typing 状态都可能出现，
+    因此只作为 input_button_desc 原始按钮文字返回，不参与 typing 判断。
+    """
+    stop_buttons = [
+        info for info in input_elements
+        if is_stop_generating_button(info)
+    ]
+    if stop_buttons:
+        return "generating", stop_buttons
+
+    if text_area is not None and text_area.get("value"):
+        return "typing", [text_area]
+
+    draft_texts = input_static_texts(input_elements, text_area)
+    if draft_texts:
+        return "typing", draft_texts
+
+    return "empty", []
+
+
+def is_back_to_bottom_button(info: dict) -> bool:
+    """
+    判断是否是“回到底部”按钮。
+
+    已观察到的回到底部按钮特征：
+      - role=AXButton
+      - description/title/value 都为空
+      - size 约为 32x32
+      - actions 包含 AXPress
+
+    这个按钮出现时，说明对话框当前脱离底部；必须保存并直接 press
+    扫描得到的按钮对象，不能用中心点重新命中。
+    """
+    if info["role"] != "AXButton":
+        return False
+    if element_label(info):
+        return False
+
+    size = info.get("size")
+    if not size:
+        return False
+    width, height = size
+    if not (28 <= width <= 36 and 28 <= height <= 36):
+        return False
+
+    return "AXPress" in info.get("actions", [])
+
+
+def is_new_conversation(conversation_elements: list[dict], completed_signals: list[dict]) -> bool:
+    """
+    判断对话框是否是 new_conversation。
+
+    当前约定：
+      1. 没有完成回复信号按钮。
+      2. 对话框区域里 AXStaticText / roleDesc=文本 的数量为 1。
+      3. 这个唯一文本是初始问候语。
+
+    输入框里的草稿文字和模型名不计入，因为它们位于输入框区域。
+    """
+    if completed_signals:
+        return False
+
+    texts = conversation_static_texts(conversation_elements)
+    if len(texts) != 1:
+        return False
+
+    return texts[0].get("value") in NEW_CONVERSATION_GREETINGS
+
+
+def conversation_state(conversation_elements: list[dict], input_elements: list[dict]) -> tuple[str, list[dict]]:
+    """
+    判断对话框状态。
+
+    判断优先级：
+      - generating: 输入框区域出现 `停止 AI 消息`
+      - new_conversation: 对话框区域只有初始问候文本，且没有完成态操作按钮
+      - detach_to_bottom: 对话框区域出现“回到底部”按钮
+      - attach_to_bottom: 出现完成态操作按钮，且没有“回到底部”按钮
+
+    `attach_to_bottom` 必须有完成态操作按钮作为证据，例如：
+    `拷贝回复`、`保存到私人页面`、`提供正面反馈`、`提供负面反馈`。
+    否则 new_conversation 页面会因为没有“回到底部”按钮而被误判为 attach。
+
+    返回 (状态, 命中状态的元素列表)。
+    """
+    stop_buttons = [
+        info for info in input_elements
+        if is_stop_generating_button(info)
+    ]
+    if stop_buttons:
+        return "generating", stop_buttons
+
+    completed_signals = completed_signal_elements(conversation_elements)
+    if is_new_conversation(conversation_elements, completed_signals):
+        return "new_conversation", conversation_static_texts(conversation_elements)
+
+    back_to_bottom_buttons = [
+        info for info in conversation_elements
+        if is_back_to_bottom_button(info)
+    ]
+    if back_to_bottom_buttons:
+        return "detach_to_bottom", back_to_bottom_buttons
+
+    if completed_signals:
+        return "attach_to_bottom", completed_signals
+
+    return "unknown", []
+
+
+def scan_for_input_button_desc(app_element, bounds: dict) -> str | None:
+    """
+    在窗口右下角区域扫描输入按钮文字。
+
+    这个按钮目前只作为原始 UI 信息返回：
+      - `提交 AI 消息`
+      - `停止 AI 消息`
+
+    不要从 `提交 AI 消息` 推断 input_state=typing，因为空输入时也可能显示它。
     """
     x0, y0, ww, wh = bounds_tuple(bounds)
     for yr in range(SCAN_Y_RANGE[0], SCAN_Y_RANGE[1], SCAN_STEP):
@@ -58,10 +512,9 @@ def scan_for_state_button(app_element, bounds: dict):
                 continue
 
             desc = ax_str(elem, kAXDescriptionAttribute)
-            for state_key, button_desc in STATE_BUTTONS.items():
-                if desc == button_desc:
-                    return state_key, desc
-    return None, None
+            if desc in INPUT_BUTTON_DESCRIPTIONS:
+                return desc
+    return None
 
 
 def check_ai_state() -> dict:
@@ -72,20 +525,84 @@ def check_ai_state() -> dict:
     if error:
         return {
             "success": False,
-            "state": "unknown",
-            "state_label": STATE_LABELS["unknown"],
+            "conversation_state": "unknown",
+            "conversation_state_label": CONVERSATION_STATE_LABELS["unknown"],
+            "input_state": "unknown",
+            "input_state_label": INPUT_STATE_LABELS["unknown"],
+            "model": None,
             "error": error,
         }
 
-    state_key, button_desc = scan_for_state_button(app_element, bounds)
-    if state_key is None:
-        state_key = "unknown"
+    elements = scan_visible_elements(app_element, bounds)
+    text_area = find_input_text_area(elements)
+    completed_signals = completed_signal_elements(elements)
+
+    input_button_desc = scan_for_input_button_desc(app_element, bounds)
+    if text_area is not None:
+        conversation_elements, input_elements = split_elements_by_input_area(elements, text_area)
+        conversation_texts = conversation_static_texts(conversation_elements)
+    else:
+        conversation_elements = []
+        input_elements = elements
+        conversation_texts = []
+
+    conv_state, conv_state_elements = conversation_state(conversation_elements, input_elements)
+    inp_state, inp_state_elements = input_state(input_elements, text_area)
+    model_info = current_model(input_elements)
 
     return {
         "success": True,
-        "state": state_key,
-        "state_label": STATE_LABELS[state_key],
-        "button_desc": button_desc,
+        "conversation_state": conv_state,
+        "conversation_state_label": CONVERSATION_STATE_LABELS[conv_state],
+        "input_state": inp_state,
+        "input_state_label": INPUT_STATE_LABELS[inp_state],
+        "model": model_info["name"],
+        "model_info": model_info,
+        "input_button_desc": input_button_desc,
+        "input_state_elements": [
+            {
+                "role": info["role"],
+                "role_description": info.get("role_description"),
+                "label": element_label(info),
+                "value": info.get("value"),
+                "position": info.get("position"),
+                "size": info.get("size"),
+                "actions": info.get("actions"),
+            }
+            for info in inp_state_elements
+        ],
+        "conversation_state_elements": [
+            {
+                "role": info["role"],
+                "role_description": info.get("role_description"),
+                "label": element_label(info),
+                "position": info.get("position"),
+                "size": info.get("size"),
+                "actions": info.get("actions"),
+            }
+            for info in conv_state_elements
+        ],
+        "regions": {
+            "has_text_area": text_area is not None,
+            "text_area": {
+                "position": text_area["position"],
+                "size": text_area["size"],
+                "value": text_area["value"],
+            } if text_area is not None else None,
+            "conversation_element_count": len(conversation_elements),
+            "input_element_count": len(input_elements),
+            "conversation_static_text_count": len(conversation_texts),
+            "conversation_static_text_values": [
+                info["value"] for info in conversation_texts
+            ],
+            "completed_signal_count": len(completed_signals),
+            "completed_signal_labels": [
+                element_label(info) for info in completed_signals
+            ],
+            "input_static_text_values": [
+                info["value"] for info in input_static_texts(input_elements, text_area)
+            ],
+        },
     }
 
 
@@ -101,8 +618,17 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         if result["success"]:
-            print(f"当前状态: {result['state_label']}")
-            print(f"匹配按钮: {result['button_desc']}")
+            print(f"对话框状态: {result['conversation_state_label']} ({result['conversation_state']})")
+            print(f"输入框状态: {result['input_state_label']} ({result['input_state']})")
+            print(f"当前模型: {result.get('model')}")
+            print(f"输入按钮: {result.get('input_button_desc')}")
+            regions = result.get("regions", {})
+            print(f"对话框文本数量: {regions.get('conversation_static_text_count')}")
+            if regions.get("conversation_static_text_values"):
+                print("对话框文本:")
+                for value in regions["conversation_static_text_values"]:
+                    print(f"  - {value}")
+            print(f"完成回复信号数量: {regions.get('completed_signal_count')}")
         else:
             print(f"检测失败: {result['error']}")
 

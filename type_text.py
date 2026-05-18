@@ -2,8 +2,9 @@
 """
 在 Notion AI 窗口中操作文本输入区（AXTextArea）。
 
-写入使用已验证可靠的剪贴板 + Cmd+V 方案。Electron 下直接
-AXSetValue 经常返回 success 但实际不写入，所以这里不使用它。
+当前已知能力以 PROJECT.md / HANDOFF.md 为准：
+读取输入框 AXValue 可用；无鼠标的文本写入仍不稳定或失败。
+本脚本保留剪贴板 + Cmd+V 路径用于继续实验，并用 AXValue 做结果验证。
 
 用法：
     ./venv/bin/python type_text.py "你好，Notion AI"
@@ -116,7 +117,10 @@ def read_input_text(app_element=None, bounds=None) -> dict:
 
 def set_input_text(text: str, app_element=None, bounds=None) -> dict:
     """
-    通过剪贴板粘贴方式设置 AI 输入框文字。
+    尝试通过剪贴板粘贴方式设置 AI 输入框文字。
+
+    该路径在当前 Notion/Electron 环境下尚未稳定打通；返回 success
+    只表示粘贴后 AXValue 与期望文本一致。
     """
     if app_element is None or bounds is None:
         app_element, bounds, pid, error = _init_environment()

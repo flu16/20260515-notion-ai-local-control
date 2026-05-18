@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-拷贝 Notion AI 的最新回复到剪贴板。
+拷贝 Notion AI 当前可定位到的回复到剪贴板。
 
 AI 完成输出后，消息下方会出现 "拷贝回复" 按钮。本脚本等待该按钮，
 点击它，然后读取系统剪贴板中的回复文本。
+
+注意：当前策略仍不保证命中最新回复，可能复制历史回复。以
+PROJECT.md / HANDOFF.md 的能力边界说明为准。
 
 用法：
     ./venv/bin/python copy_reply.py
@@ -19,7 +22,9 @@ from search_element import search_element
 
 def copy_ai_reply(wait_timeout: float = 30.0) -> dict:
     """
-    等待 Notion AI 完成输出，然后拷贝最新回复。
+    等待 "拷贝回复" 按钮出现，然后拷贝其对应回复。
+
+    当前搜索策略不能可靠证明该按钮属于最新回复。
     """
     print(f"等待 '拷贝回复' 按钮出现（最长 {wait_timeout}s）...")
     start_time = time.time()

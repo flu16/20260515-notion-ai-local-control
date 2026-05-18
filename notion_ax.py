@@ -27,6 +27,7 @@ from ApplicationServices import (
     kAXPositionAttribute,
     kAXPressAction,
     kAXRaiseAction,
+    kAXRoleDescriptionAttribute,
     kAXRoleAttribute,
     kAXSizeAttribute,
     kAXTitleAttribute,
@@ -95,6 +96,7 @@ def element_info(element, description: str | None = None) -> dict:
     """Collect the small, stable AX fields useful for debugging."""
     return {
         "role": ax_str(element, kAXRoleAttribute),
+        "role_description": ax_str(element, kAXRoleDescriptionAttribute),
         "description": description if description is not None else ax_str(element, kAXDescriptionAttribute),
         "title": ax_str(element, kAXTitleAttribute),
         "value": ax_str(element, kAXValueAttribute),
@@ -292,6 +294,7 @@ __all__ = [
     "kAXErrorSuccess",
     "kAXFocusedAttribute",
     "kAXPositionAttribute",
+    "kAXRoleDescriptionAttribute",
     "kAXRoleAttribute",
     "kAXSizeAttribute",
     "kAXTitleAttribute",

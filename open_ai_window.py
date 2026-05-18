@@ -10,6 +10,9 @@ Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常是
     ./venv/bin/python open_ai_window.py
     ./venv/bin/python open_ai_window.py --check
     ./venv/bin/python open_ai_window.py --open
+
+注意：`--open` 也是幂等的。它会先检查窗口是否已打开；
+如果已打开，不会再次发送 Cmd+Shift+J，避免把窗口切掉。
 """
 
 import sys
@@ -62,12 +65,20 @@ def _closed(error: str | None) -> dict:
 
 def open_ai_window() -> dict:
     """
-    通过模拟 Cmd+Shift+J 打开 Notion AI 窗口。
+    确保 Notion AI 窗口打开。
+
+    该函数是幂等的：先检查窗口是否已打开，已打开则直接返回；
+    只有未打开时才发送 Cmd+Shift+J。
     """
     app_element, app, error = create_notion_app_element()
     if error:
         return _closed(error)
     enable_manual_accessibility(app_element)
+
+    status = is_ai_window_open(app_element)
+    if status["open"]:
+        print("AI 窗口已打开，不发送 Cmd+Shift+J")
+        return {**status, "already_open": True}
 
     post_open_ai_shortcut()
     print("已发送 Cmd+Shift+J，等待 AI 窗口出现...")
@@ -78,7 +89,7 @@ def open_ai_window() -> dict:
         status = is_ai_window_open(app_element)
         if status["open"]:
             print("  窗口已打开")
-            return status
+            return {**status, "already_open": False}
 
     print("  等待超时")
     return {
@@ -96,8 +107,7 @@ def ensure_ai_window_open() -> dict:
         return {**status, "already_open": True}
 
     print("AI 窗口未打开，正在发送 Cmd+Shift+J...")
-    result = open_ai_window()
-    return {**result, "already_open": False}
+    return open_ai_window()
 
 
 def main():
@@ -105,7 +115,7 @@ def main():
         print("用法: ./venv/bin/python open_ai_window.py [选项]")
         print("  (无参数)          确保窗口打开（先检查，没开则发送 Cmd+Shift+J）")
         print("  --check            仅检查窗口是否已打开")
-        print("  --open             直接发送 Cmd+Shift+J 打开")
+        print("  --open             确保窗口打开（已打开则不发送 Cmd+Shift+J）")
         sys.exit(0)
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--check":

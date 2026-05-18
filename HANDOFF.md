@@ -92,9 +92,30 @@ https://github.com/flu16/20260515-notion-ai-local-control
 
 ```bash
 ./venv/bin/python search_element.py --list
+./venv/bin/python search_element.py --list --include-empty
 ```
 
-会列出当前可见区域里有 `AXDescription` 或 `AXTitle` 的元素。
+默认会列出当前可见区域里有 `AXDescription` 或 `AXTitle` 的元素。
+
+加 `--include-empty` 后，会额外列出没有 `AXDescription` / `AXTitle`
+的元素，并显示为 `<empty>`。这用于寻找“回到底部”这类无 label 图标按钮。
+
+### 目标搜索
+
+```bash
+./venv/bin/python search_element.py "提交 AI 消息"
+./venv/bin/python search_element.py "添加图片、PDF 或 CSV"
+./venv/bin/python search_element.py "在下乐意为你效劳。"
+./venv/bin/python search_element.py "拷贝回复" --timeout 30
+```
+
+目标搜索会同时匹配 `AXDescription`、`AXTitle` 和 `AXValue`：
+
+- 普通按钮通常在 `AXDescription` 中有 label
+- 菜单项可能只有 `AXTitle`，例如 `添加图片、PDF 或 CSV`
+- 初始页问候语等正文文本可能只有 `AXValue`，例如 `在下乐意为你效劳。`
+
+全窗口目标搜索先做网格扫描；如果找不到，再通过 Tab 导航读取焦点元素。
 
 ### 区域扫描
 
@@ -102,15 +123,18 @@ https://github.com/flu16/20260515-notion-ai-local-control
 
 ```bash
 ./venv/bin/python search_element.py --list --region 25,45,75,92 --include-empty --step 1
+./venv/bin/python search_element.py "拷贝回复" --region 0,55,60,90 --timeout 5
 ```
 
 参数说明：
 
 - `--region X1,Y1,X2,Y2`：扫描窗口百分比区域
+- 对指定元素使用 `--region` 时，只在局部区域做网格扫描，不回退到 Tab 导航
+- 对指定元素使用 `--region --timeout SEC` 时，会在超时时间内重复扫描该局部区域
 - `--include-empty`：列出没有 `AXDescription` / `AXTitle` 的元素
 - `--step N`：扫描步长百分比
 
-这个功能用于找没有 label 的图标按钮，比如“回到底部”按钮。
+这个功能用于找没有 label 的图标按钮，比如“回到底部”按钮，也可用于在底部操作区附近局部查找 `拷贝回复`。
 
 ### 点击“提供背景信息”
 
