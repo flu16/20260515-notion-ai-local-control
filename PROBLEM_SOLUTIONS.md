@@ -162,6 +162,106 @@ AXFocus -> AXSelectedTextRange=(0,0) -> Cmd+V -> AXValue 验证
 
 `Shift+Tab` 路径已从 `input_box.py` 主实现中移除，只作为历史实验结论保留在记录里。
 
+## 长文本粘贴验证与 Notion 富文本规范化
+
+### 问题
+
+`ask_and_copy_reply.py --from-clipboard --new_conversation --json` 在提交一个 6000 字左右、
+包含 shell 代码、文件名、引号和 Markdown-like 标记的长问题时，失败返回：
+
+```json
+{
+  "success": false,
+  "step": "input",
+  "error": "粘贴验证不匹配"
+}
+```
+
+一开始看起来像是 `--from-clipboard` 取剪贴板失败，或长文本没有粘进 Notion AI 输入框。
+实际读取输入框后发现，问题文本已经基本完整进入输入框。
+
+### 观察到的现象
+
+剪贴板原文片段：
+
+```text
+=== run-task.sh ===
+```
+
+粘贴进 Notion 后，通过 AXValue 读回的片段变成：
+
+```text
+===
+run-task.sh
+===
+```
+
+类似地，正文中的 `run-task.sh` 也可能因为 Notion 自动识别为链接或富文本 token，
+在 AXValue 中被拆出额外换行。
+
+一次复现数据：
+
+```text
+expected_len = 6075
+actual_len   = 6079
+equal        = False
+first_diff   = 139
+```
+
+也就是说，真实问题已经粘贴成功，但 `input_box.py` 原来的严格校验：
+
+```python
+actual == text
+```
+
+把 Notion/Electron 富文本编辑器产生的轻微 AXValue 规范化误判成失败。
+
+### 根因
+
+Notion 输入框不是纯文本框，而是富文本编辑器。Cmd+V 后，编辑器可能把部分内容自动识别为：
+
+- 链接文本
+- 文件名样式 token
+- Markdown-like 标题或分隔片段
+- 内部富文本节点
+
+这些富文本节点在可见内容上仍然正确，但 Accessibility 暴露的 `AXValue` 会插入额外换行或
+做轻微文本规范化。因此，`AXValue` 不能作为长文本粘贴的字节级相等依据。
+
+### 解决方法
+
+保留短文本严格校验；对长文本增加软匹配：
+
+```text
+1. 先尝试 exact match。
+2. 粘贴后最多轮询几秒，避免 AXValue 读取太早。
+3. 若文本长度超过阈值，允许极高相似度的软匹配。
+4. 同时限制长度差比例，避免把明显截断或残留叠加误判为成功。
+```
+
+当前策略：
+
+```text
+LONG_TEXT_SOFT_MATCH_MIN_LENGTH = 1000
+LONG_TEXT_SOFT_MATCH_RATIO = 0.995
+length_delta / expected_len <= 0.02
+```
+
+并且在 `ask_and_copy_reply.py` 的 `step=input` 失败结果里返回 `input_validation`，
+便于后续判断是：
+
+- exact mismatch
+- soft match 未达标
+- actual_len 明显短于 expected_len
+- actual_len 明显长于 expected_len，可能有旧文本残留
+
+### 结论
+
+对 Notion AI 输入框，校验目标应是“用户问题是否语义完整进入编辑器”，
+而不是 AXValue 与剪贴板文本逐字符相同。
+
+短文本仍应严格匹配；长文本、含链接/文件名/代码片段的内容，应允许富文本编辑器带来的极小差异。
+
 ## ask_and_copy_reply 的完成态复制
 
 ### 问题

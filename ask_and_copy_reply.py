@@ -452,7 +452,13 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
         quiet=quiet,
     )
     if not typed["success"]:
-        return {"success": False, "text": "", "step": "input", "error": typed["error"]}
+        return {
+            "success": False,
+            "text": "",
+            "step": "input",
+            "error": typed["error"],
+            "input_validation": typed.get("validation"),
+        }
     step_number += 1
 
     _print(f"{step_number}. 提交问题", quiet)
