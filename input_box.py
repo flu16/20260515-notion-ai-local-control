@@ -60,6 +60,7 @@ from notion_ax import (
     kAXFocusedAttribute,
     kAXRoleAttribute,
     kAXValueAttribute,
+    KEY_A,
     KEY_DELETE,
     KEY_V,
     post_key,
@@ -75,11 +76,11 @@ TEXT_AREA_SCAN_X_RANGE = range(0, 100, 1)
 # 未激活真实插入点时，Notion/Electron 暴露的特殊行号。
 INVALID_INSERTION_LINE_NUMBER = 9223372036854775807
 
-# Rich text editors can normalize pasted content in their AXValue, especially
-# around auto-linked text. Exact equality is still preferred; this threshold only
-# accepts tiny editor-introduced formatting differences in long prompts.
+# Rich text editors can normalize pasted content in their AXValue. Exact
+# equality is still preferred; long prompts additionally allow a length-based
+# match as long as no old input residue is detected.
 LONG_TEXT_SOFT_MATCH_MIN_LENGTH = 1000
-LONG_TEXT_SOFT_MATCH_RATIO = 0.995
+LONG_TEXT_MAX_LENGTH_RATIO = 0.02
 
 
 def _init_environment():
@@ -218,25 +219,42 @@ def set_selected_text_range(text_area, location: int, length: int) -> int:
     return AXUIElementSetAttributeValue(text_area, "AXSelectedTextRange", range_value)
 
 
-def validate_pasted_text(expected: str, actual: str, replace_existing: bool = True) -> dict:
-    """验证粘贴结果，兼容长文本在 Notion 富文本编辑器里的轻微 AXValue 规范化。"""
+def validate_pasted_text(expected: str, actual: str, replace_existing: bool = True,
+                         before_text: str = "") -> dict:
+    """验证粘贴结果，重点防止替换时把输入框旧文本一起发出去。"""
     exact = actual == expected if replace_existing else expected in actual
     ratio = difflib.SequenceMatcher(None, expected, actual).ratio() if expected or actual else 1.0
     length_delta = abs(len(actual) - len(expected))
     length_ratio = length_delta / max(len(expected), 1)
+    has_residue = (
+        replace_existing
+        and bool(before_text)
+        and before_text not in expected
+        and before_text in actual
+    )
+    length_match = (
+        replace_existing
+        and len(expected) >= LONG_TEXT_SOFT_MATCH_MIN_LENGTH
+        and length_ratio <= LONG_TEXT_MAX_LENGTH_RATIO
+        and not has_residue
+    )
     soft_match = (
         replace_existing
         and len(expected) >= LONG_TEXT_SOFT_MATCH_MIN_LENGTH
-        and ratio >= LONG_TEXT_SOFT_MATCH_RATIO
-        and length_ratio <= 0.02
+        and ratio >= 0.90
+        and length_ratio <= LONG_TEXT_MAX_LENGTH_RATIO
+        and not has_residue
     )
     return {
-        "success": exact or soft_match,
+        "success": exact or length_match,
         "exact_match": exact,
         "soft_match": soft_match,
+        "length_match": length_match,
+        "has_residue": has_residue,
         "similarity": ratio,
         "expected_len": len(expected),
         "actual_len": len(actual),
+        "before_len": len(before_text),
         "length_delta": len(actual) - len(expected),
     }
 
@@ -338,33 +356,38 @@ def input_text(text: str, replace_existing: bool = True,
             "error": "未能激活输入框真实插入点",
         }
 
-    if replace_existing:
-        char_count = read_number_of_characters(text_area)
-        select_err = set_selected_text_range(text_area, 0, char_count)
-        time.sleep(0.12)
-        if select_err != kAXErrorSuccess:
-            return {
-                "success": False,
-                "text": ax_str(text_area, kAXValueAttribute),
-                "expected_text": text,
-                "method": "selected_range_paste",
-                "replace_existing": replace_existing,
-                "text_area_info": info,
-                "activation_info": activation,
-                "error": f"设置全文选区失败 (error_code={select_err})",
-            }
+    before_text = ax_str(text_area, kAXValueAttribute)
 
     set_clipboard_text(text)
     post_key_combo(KEY_V, Quartz.kCGEventFlagMaskCommand)
     time.sleep(0.35)
+    primed_text = ax_str(text_area, kAXValueAttribute)
 
-    validation = validate_pasted_text(text, ax_str(text_area, kAXValueAttribute), replace_existing)
+    replace_strategy = {
+        "before_len": len(before_text),
+        "primed_len": len(primed_text),
+        "double_paste": False,
+        "always_double_paste": replace_existing,
+    }
+    if replace_existing:
+        post_key_combo(KEY_A, Quartz.kCGEventFlagMaskCommand)
+        time.sleep(0.12)
+        post_key_combo(KEY_V, Quartz.kCGEventFlagMaskCommand)
+        time.sleep(0.35)
+        replace_strategy["double_paste"] = True
+
+    validation = validate_pasted_text(
+        text,
+        ax_str(text_area, kAXValueAttribute),
+        replace_existing,
+        before_text,
+    )
     actual = ax_str(text_area, kAXValueAttribute)
     deadline = time.time() + 5.0
     while not validation["success"] and time.time() < deadline:
         time.sleep(0.2)
         actual = ax_str(text_area, kAXValueAttribute)
-        validation = validate_pasted_text(text, actual, replace_existing)
+        validation = validate_pasted_text(text, actual, replace_existing, before_text)
 
     success = validation["success"]
     if success and not quiet:
@@ -378,6 +401,7 @@ def input_text(text: str, replace_existing: bool = True,
         "expected_text": text,
         "method": "selected_range_paste",
         "replace_existing": replace_existing,
+        "replace_strategy": replace_strategy,
         "validation": validation,
         "text_area_info": info,
         "activation_info": activation,
@@ -420,18 +444,8 @@ def clear_input_text(app_element=None, bounds=None) -> dict:
             "error": "未能激活输入框真实插入点",
         }
 
-    char_count = read_number_of_characters(text_area)
-    select_err = set_selected_text_range(text_area, 0, char_count)
+    post_key_combo(KEY_A, Quartz.kCGEventFlagMaskCommand)
     time.sleep(0.12)
-    if select_err != kAXErrorSuccess:
-        return {
-            "success": False,
-            "text": ax_str(text_area, kAXValueAttribute),
-            "text_area_info": info,
-            "activation_info": activation,
-            "error": f"设置全文选区失败 (error_code={select_err})",
-        }
-
     post_key(KEY_DELETE, True)
     time.sleep(0.05)
     post_key(KEY_DELETE, False)

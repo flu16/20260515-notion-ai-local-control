@@ -221,10 +221,11 @@ def press_back_to_bottom(timeout: float = 5.0, quiet: bool = False) -> dict:
 
 def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
     """
-    按下 `开始新对话`，并等待窗口回到新对话空输入状态。
+    按下 `开始新对话`，并等待窗口回到新对话状态。
 
     这个步骤只在用户显式传入 --new_conversation 时执行。默认流程不会自动开新对话，
     以免打断用户当前正在看的上下文。
+    输入框可能保留旧内容；后续 input_text 会在写入前清空并验证无残留。
     """
     pressed = press_labeled_button(
         NEW_CONVERSATION_LABEL,
@@ -244,12 +245,11 @@ def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
         lambda r: (
             r.get("success")
             and r.get("conversation_state") == "new_conversation"
-            and r.get("input_state") == "empty"
         ),
         timeout=timeout,
         interval=0.4,
         quiet=quiet,
-        label="新对话空输入状态",
+        label="新对话状态",
     )
     return settled
 
