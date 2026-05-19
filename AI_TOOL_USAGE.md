@@ -53,7 +53,7 @@
 如果你是 AI 代理，推荐使用 JSON，便于判断成功或失败：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py "请只回答：OK" --new_conversation --timeout 120 --json
+./venv/bin/python ask_and_copy_reply.py "请只回答：OK" --new_conversation --json
 ```
 
 成功时的典型结构：
@@ -82,23 +82,52 @@
   "success": false,
   "text": "",
   "step": "wait_finished",
-  "error": "等待生成完成并进入稳定对话框状态 超时 (120.0s)"
+  "error": "等待生成完成并进入稳定对话框状态 超时 (300.0s)"
 }
 ```
 
 AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
 
+### 复杂问题使用剪贴板传入
+
+如果问题里包含 shell 代码、单引号、双引号、反斜杠、Markdown 代码块或很长的文本，
+不要把问题拼进 shell 命令字符串。先把完整问题写进系统剪贴板，然后使用：
+
+```bash
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --new_conversation --json
+```
+
+`--from-clipboard` 会直接从系统剪贴板读取问题文本，再粘贴到 Notion AI 输入框。
+这能绕开 shell 对引号、换行、`$(...)` 和路径空格的解析问题。
+
 ## 参数说明
 
 ### `question`
 
-必填。要提交给 Notion AI 的问题。
+要提交给 Notion AI 的问题。使用 `--from-clipboard` 时可以省略。
 
 示例：
 
 ```bash
 ./venv/bin/python ask_and_copy_reply.py "用中文解释一下 Accessibility API"
 ```
+
+复杂文本推荐：
+
+```bash
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --json
+```
+
+### `--from-clipboard`
+
+可选。从系统剪贴板读取问题文本。
+
+适合：
+
+- 问题包含 shell 代码里的 `'single quotes'`
+- 问题包含未配对引号、反斜杠、Markdown 代码块
+- 问题来自文件、编辑器或上游代理生成的长文本
+- 当前路径包含空格，不想进入 heredoc / command substitution 的解析陷阱
 
 ### `--new_conversation`
 
@@ -119,17 +148,17 @@ AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
 
 ### `--timeout`
 
-可选。等待生成完成的最长秒数，默认 `120`。
+可选。等待生成完成的最长秒数，默认 `300`。
 
 建议：
 
-- 短问题：`60` 到 `120`
-- 长故事、长总结、复杂分析：`180` 到 `300`
+- 短问题：通常不用设置，默认会在生成完成后立刻返回
+- 很长的故事、总结或复杂分析：`300` 到 `600`
 
 示例：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py "请写一篇 1500 字故事" --new_conversation --timeout 300
+./venv/bin/python ask_and_copy_reply.py "请写一篇 1500 字故事" --new_conversation --timeout 600
 ```
 
 ### `--json`
@@ -253,7 +282,7 @@ unknown
 ```text
 1. 优先使用 ask_and_copy_reply.py。
 2. 独立问题默认加 --new_conversation。
-3. 长任务把 --timeout 提高到 180 或 300。
+3. 长任务把 --timeout 提高到 600。
 4. 自动化场景使用 --json。
 5. 只在 success=true 时读取 text。
 6. 如果 success=false，读取 step 和 error 判断失败点。
@@ -267,14 +296,19 @@ unknown
 ```python
 import json
 import subprocess
+from AppKit import NSPasteboard, NSPasteboardTypeString
 
+question = "请解释一下 MCP，并给一个例子"
+pb = NSPasteboard.generalPasteboard()
+pb.declareTypes_owner_([NSPasteboardTypeString], None)
+pb.setString_forType_(question, NSPasteboardTypeString)
 cmd = [
     "./venv/bin/python",
     "ask_and_copy_reply.py",
-    "请解释一下 MCP，并给一个例子",
+    "--from-clipboard",
     "--new_conversation",
     "--timeout",
-    "180",
+    "300",
     "--json",
 ]
 
@@ -285,6 +319,30 @@ if result["success"]:
     answer = result["text"]
 else:
     raise RuntimeError(f"{result.get('step')}: {result.get('error')}")
+```
+
+不要使用 `shell=True` 或把问题插入一整段 shell 命令字符串。`subprocess.run([...])`
+会把每个参数原样传给 Python 脚本，是最稳的调用方式。
+
+当前版本在 `--json` 下只输出 JSON。若需要兼容旧版本里 stdout 混入过程日志的情况，
+不要用 `stdout.splitlines()[-1]`，应该从 stdout 中扫描可解析的 JSON 对象：
+
+```python
+def extract_json_object(stdout: str) -> dict:
+    decoder = json.JSONDecoder()
+    last = None
+    for i, ch in enumerate(stdout):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(stdout[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "success" in obj and "text" in obj:
+            last = obj
+    if last is None:
+        raise ValueError("stdout 中没有找到 ask_and_copy_reply 的 JSON 结果")
+    return last
 ```
 
 ## 不推荐直接使用的底层脚本
@@ -322,7 +380,7 @@ else:
 提高 `--timeout`：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py "请写一个长故事" --new_conversation --timeout 300 --json
+./venv/bin/python ask_and_copy_reply.py "请写一个长故事" --new_conversation --timeout 600 --json
 ```
 
 ### 复制后剪贴板没有变化

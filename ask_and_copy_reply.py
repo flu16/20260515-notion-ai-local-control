@@ -18,8 +18,9 @@
 
 用法：
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事"
+    ./venv/bin/python ask_and_copy_reply.py --from-clipboard
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --new_conversation
-    ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 120
+    ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 300
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --json
 """
 
@@ -413,7 +414,7 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
     return {"success": True, "text": text, "copy_button_info": pressed["info"], "error": None}
 
 
-def ask_and_copy_reply(question: str, timeout: float = 120.0,
+def ask_and_copy_reply(question: str, timeout: float = 300.0,
                        new_conversation: bool = False,
                        quiet: bool = False) -> dict:
     """
@@ -443,7 +444,13 @@ def ask_and_copy_reply(question: str, timeout: float = 120.0,
         step_number += 1
 
     _print(f"{step_number}. 写入问题", quiet)
-    typed = input_text(question, replace_existing=True, app_element=app_element, bounds=bounds)
+    typed = input_text(
+        question,
+        replace_existing=True,
+        app_element=app_element,
+        bounds=bounds,
+        quiet=quiet,
+    )
     if not typed["success"]:
         return {"success": False, "text": "", "step": "input", "error": typed["error"]}
     step_number += 1
@@ -494,8 +501,17 @@ def ask_and_copy_reply(question: str, timeout: float = 120.0,
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="向 Notion AI 提问并复制最终回复")
-    parser.add_argument("question", help="要提交给 Notion AI 的问题")
-    parser.add_argument("--timeout", "-t", type=float, default=120.0, help="等待生成完成的最长秒数")
+    parser.add_argument(
+        "question",
+        nargs="?",
+        help="要提交给 Notion AI 的问题；复杂文本建议用 --from-clipboard",
+    )
+    parser.add_argument(
+        "--from-clipboard",
+        action="store_true",
+        help="从系统剪贴板读取问题文本，避免 shell 引号、换行和路径空格解析问题",
+    )
+    parser.add_argument("--timeout", "-t", type=float, default=300.0, help="等待生成完成的最长秒数")
     parser.add_argument(
         "--new_conversation",
         action="store_true",
@@ -503,7 +519,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--quiet", action="store_true", help="减少过程日志")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.from_clipboard:
+        args.question = get_clipboard_text()
+        if not args.question:
+            parser.error("--from-clipboard 已设置，但系统剪贴板里没有文本")
+    elif args.question is None:
+        parser.error("必须提供 question，或使用 --from-clipboard 从剪贴板读取问题")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

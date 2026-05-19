@@ -268,7 +268,7 @@ def is_focused_input_text_area(app_element=None, bounds=None) -> dict:
 
 
 def input_text(text: str, replace_existing: bool = True,
-               app_element=None, bounds=None) -> dict:
+               app_element=None, bounds=None, quiet: bool = False) -> dict:
     """
     向 Notion AI 输入文本。
 
@@ -330,9 +330,9 @@ def input_text(text: str, replace_existing: bool = True,
 
     actual = ax_str(text_area, kAXValueAttribute)
     success = actual == text if replace_existing else text in actual
-    if success:
+    if success and not quiet:
         print(f"  输入成功: {actual!r}")
-    else:
+    elif not quiet:
         print(f"  输入不匹配: 期望包含/等于 {text!r}, 实际 {actual!r}")
 
     return {

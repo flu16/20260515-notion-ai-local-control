@@ -62,6 +62,7 @@ INPUT_BUTTON_DESCRIPTIONS = {
 
 NEW_CONVERSATION_GREETINGS = {
     "在下乐意为你效劳。",
+"我们今天的任务是什么?",
 }
 
 COMPLETED_SIGNAL_LABELS = {
@@ -392,7 +393,7 @@ def is_new_conversation(conversation_elements: list[dict], completed_signals: li
     if len(texts) != 1:
         return False
 
-    return texts[0].get("value") in NEW_CONVERSATION_GREETINGS
+    return True
 
 
 def conversation_state(conversation_elements: list[dict], input_elements: list[dict]) -> tuple[str, list[dict]]:

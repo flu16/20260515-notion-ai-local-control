@@ -408,8 +408,12 @@
 
 ```bash
 ./venv/bin/python ask_and_copy_reply.py "请讲一个故事"
-./venv/bin/python ask_and_copy_reply.py "请讲一个故事" --new_conversation --timeout 120
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --json
+./venv/bin/python ask_and_copy_reply.py "请讲一个故事" --new_conversation --timeout 600
 ```
+
+复杂问题（包含 shell 代码、引号、反斜杠、长 Markdown 或路径空格）建议先写入系统剪贴板，
+再用 `--from-clipboard` 读取，避免 shell 提前解析问题文本。
 
 流程：
 
