@@ -55,6 +55,7 @@ from notion_ax import (
 
 STOP_GENERATING_BUTTON_DESC = "停止 AI 消息"
 SUBMIT_BUTTON_DESC = "提交 AI 消息"
+COPY_REPLY_LABEL = "拷贝回复"
 INPUT_BUTTON_DESCRIPTIONS = {
     STOP_GENERATING_BUTTON_DESC,
     SUBMIT_BUTTON_DESC,
@@ -66,7 +67,7 @@ NEW_CONVERSATION_GREETINGS = {
 }
 
 COMPLETED_SIGNAL_LABELS = {
-    "拷贝回复",
+    COPY_REPLY_LABEL,
     "保存到私人页面",
     "提供正面反馈",
     "提供负面反馈",
@@ -90,6 +91,11 @@ SCAN_Y_RANGE = (85, 98)
 SCAN_X_RANGE = (70, 98)
 SCAN_STEP = 2
 FULL_SCAN_STEP = 1
+BACK_TO_BOTTOM_X_RANGE = (42, 58)
+BACK_TO_BOTTOM_Y_RANGE = (62, 88)
+COPY_REPLY_X_RANGE = (0, 25)
+COPY_REPLY_Y_RANGE = (0, 92)
+BOTTOM_COPY_Y_RANGE = (50, 90)
 
 
 def element_label(info: dict) -> str:
@@ -146,6 +152,65 @@ def scan_visible_elements(app_element, bounds: dict, step: int = FULL_SCAN_STEP)
         element_label(e),
     ))
     return elements
+
+
+def scan_visible_element_objects(app_element, bounds: dict, step: int = FULL_SCAN_STEP,
+                                 x_range=(0, 100),
+                                 y_range=(0, 100)) -> list[tuple[object, dict]]:
+    """
+    扫描当前 AI 窗口可见元素，返回 AX 元素对象和轻量信息。
+
+    自动点击流程需要保留 AX 元素对象本身来执行 AXPress；状态检测只需要 dict。
+    这个 helper 放在这里，确保“如何扫描 Notion AI UI”的知识集中维护。
+    """
+    x0, y0, ww, wh = bounds_tuple(bounds)
+    seen = set()
+    elements: list[tuple[object, dict]] = []
+
+    for yr in range(y_range[0], y_range[1] + 1, step):
+        for xr in range(x_range[0], x_range[1] + 1, step):
+            elem = element_at_position(
+                app_element,
+                float(x0 + ww * xr / 100.0),
+                float(y0 + wh * yr / 100.0),
+            )
+            if elem is None:
+                continue
+
+            info = element_info(elem)
+            key = (
+                info["role"],
+                info.get("role_description"),
+                info.get("description"),
+                info.get("title"),
+                info.get("value"),
+                info.get("position"),
+                info.get("size"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            elements.append((elem, info))
+
+    elements.sort(key=lambda item: (
+        item[1]["position"][1] if item[1].get("position") else 0,
+        item[1]["position"][0] if item[1].get("position") else 0,
+        element_label(item[1]),
+    ))
+    return elements
+
+
+def bottom_most_object(elements: list[tuple[object, dict]]) -> tuple[object, dict] | None:
+    """返回 y 坐标最靠下的 AX 元素对象和信息。"""
+    if not elements:
+        return None
+    return max(
+        elements,
+        key=lambda item: (
+            item[1]["position"][1] if item[1].get("position") else -1,
+            item[1]["position"][0] if item[1].get("position") else -1,
+        ),
+    )
 
 
 def find_input_text_area(elements: list[dict]) -> dict | None:
@@ -373,6 +438,88 @@ def is_back_to_bottom_button(info: dict) -> bool:
         return False
 
     return "AXPress" in info.get("actions", [])
+
+
+def find_back_to_bottom_button(app_element, bounds: dict,
+                               x_range=BACK_TO_BOTTOM_X_RANGE,
+                               y_range=BACK_TO_BOTTOM_Y_RANGE,
+                               step: int = 2) -> tuple[object, dict] | None:
+    """
+    轻量扫描“回到底部”按钮。
+
+    该按钮通常固定在输入框上方一点、窗口水平居中位置，因此默认只扫一个小区域。
+    返回 AX 元素对象，调用方可以直接执行 AXPress。
+    """
+    matches = [
+        (elem, info)
+        for elem, info in scan_visible_element_objects(
+            app_element,
+            bounds,
+            step=step,
+            x_range=x_range,
+            y_range=y_range,
+        )
+        if is_back_to_bottom_button(info)
+    ]
+    return bottom_most_object(matches)
+
+
+def scan_for_back_to_bottom_button(app_element, bounds: dict,
+                                   x_range=BACK_TO_BOTTOM_X_RANGE,
+                                   y_range=BACK_TO_BOTTOM_Y_RANGE,
+                                   step: int = 2) -> tuple[object, dict] | None:
+    """轻量扫描“回到底部”按钮，返回可直接 AXPress 的元素对象。"""
+    return find_back_to_bottom_button(
+        app_element,
+        bounds,
+        x_range=x_range,
+        y_range=y_range,
+        step=step,
+    )
+
+
+def scan_for_copy_reply_button(app_element, bounds: dict,
+                               x_range=COPY_REPLY_X_RANGE,
+                               y_range=COPY_REPLY_Y_RANGE,
+                               step: int = 1) -> tuple[object, dict] | None:
+    """
+    轻量扫描 `拷贝回复` 按钮。
+
+    该按钮的 y 坐标会随回复长度变化，但 x 坐标稳定在回复操作区最左侧。
+    """
+    matches = [
+        (elem, info)
+        for elem, info in scan_visible_element_objects(
+            app_element,
+            bounds,
+            step=step,
+            x_range=x_range,
+            y_range=y_range,
+        )
+        if element_label(info) == COPY_REPLY_LABEL and "AXPress" in info.get("actions", [])
+    ]
+    return bottom_most_object(matches)
+
+
+def scan_fast_completion_signals(app_element, bounds: dict) -> dict:
+    """
+    轻量扫描生成完成相关信号，避免长回复时完整 AX 树扫描成为主路径。
+
+    返回的 AX 元素对象可由调用方直接 press。
+    """
+    input_button_desc = scan_for_input_button_desc(app_element, bounds)
+    back_to_bottom = scan_for_back_to_bottom_button(app_element, bounds)
+    copy_reply = scan_for_copy_reply_button(app_element, bounds)
+
+    return {
+        "input_button_desc": input_button_desc,
+        "stop_visible": input_button_desc == STOP_GENERATING_BUTTON_DESC,
+        "submit_visible": input_button_desc == SUBMIT_BUTTON_DESC,
+        "back_to_bottom_button": back_to_bottom,
+        "copy_reply_button": copy_reply,
+        "has_back_to_bottom": back_to_bottom is not None,
+        "has_copy_reply": copy_reply is not None,
+    }
 
 
 def is_new_conversation(conversation_elements: list[dict], completed_signals: list[dict]) -> bool:

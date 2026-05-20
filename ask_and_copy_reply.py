@@ -32,9 +32,14 @@ import sys
 import time
 
 from check_ai_state import (
+    BOTTOM_COPY_Y_RANGE,
+    COPY_REPLY_X_RANGE,
+    STOP_GENERATING_BUTTON_DESC,
     check_ai_state,
     element_label,
-    is_back_to_bottom_button,
+    scan_fast_completion_signals,
+    scan_for_back_to_bottom_button,
+    scan_for_copy_reply_button,
 )
 from input_box import input_text
 from notion_ax import (
@@ -151,9 +156,24 @@ def bottom_most(elements: list[tuple[object, dict]]) -> tuple[object, dict] | No
     )
 
 
+def find_labeled_button(label: str, x_range=(0, 100), y_range=(0, 100),
+                        step: int = 1) -> tuple[object, dict] | None:
+    """在指定可见区域内查找最靠下的可按 label 按钮。"""
+    matches = [
+        (elem, info)
+        for elem, info in scan_visible_element_objects(
+            step=step,
+            x_range=x_range,
+            y_range=y_range,
+        )
+        if element_label(info) == label and "AXPress" in info.get("actions", [])
+    ]
+    return bottom_most(matches)
+
+
 def press_labeled_button(label: str, timeout: float = 5.0,
                          x_range=(0, 100), y_range=(0, 100),
-                         quiet: bool = False) -> dict:
+                         step: int = 1, quiet: bool = False) -> dict:
     """
     等待并按下指定 label 的按钮。
 
@@ -162,13 +182,8 @@ def press_labeled_button(label: str, timeout: float = 5.0,
     deadline = time.time() + timeout
     last_count = 0
     while time.time() < deadline:
-        matches = [
-            (elem, info)
-            for elem, info in scan_visible_element_objects(x_range=x_range, y_range=y_range)
-            if element_label(info) == label and "AXPress" in info.get("actions", [])
-        ]
-        last_count = len(matches)
-        target = bottom_most(matches)
+        target = find_labeled_button(label, x_range=x_range, y_range=y_range, step=step)
+        last_count = 1 if target is not None else 0
         if target is not None:
             elem, info = target
             err = press(elem)
@@ -197,12 +212,18 @@ def press_back_to_bottom(timeout: float = 5.0, quiet: bool = False) -> dict:
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        matches = [
-            (elem, info)
-            for elem, info in scan_visible_element_objects()
-            if is_back_to_bottom_button(info)
-        ]
-        target = bottom_most(matches)
+        app_element, bounds, error = ensure_ai_window()
+        if error:
+            return {"success": False, "info": None, "error": error}
+
+        target = scan_for_back_to_bottom_button(app_element, bounds)
+        if target is None:
+            target = scan_for_back_to_bottom_button(
+                app_element,
+                bounds,
+                x_range=(0, 100),
+                y_range=(0, 100),
+            )
         if target is not None:
             elem, info = target
             err = press(elem)
@@ -217,6 +238,177 @@ def press_back_to_bottom(timeout: float = 5.0, quiet: bool = False) -> dict:
         time.sleep(0.2)
 
     return {"success": False, "info": None, "error": f"等待 {timeout}s 后仍未找到回到底部按钮"}
+
+
+def wait_for_bottom_copy_button(timeout: float = 3.0) -> dict:
+    """轻量确认：贴底后底部操作区会出现最新回复的拷贝按钮。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app_element, bounds, error = ensure_ai_window()
+        if error:
+            return {"success": False, "info": None, "error": error}
+
+        target = scan_for_copy_reply_button(
+            app_element,
+            bounds,
+            x_range=COPY_REPLY_X_RANGE,
+            y_range=BOTTOM_COPY_Y_RANGE,
+            step=1,
+        )
+        if target is not None:
+            _, info = target
+            return {"success": True, "info": info, "error": None}
+        time.sleep(0.15)
+
+    return {"success": False, "info": None, "error": f"等待底部 {COPY_REPLY_LABEL!r} 超时 ({timeout}s)"}
+
+
+def detached_complete_state(back_button_info: dict) -> dict:
+    """用回到底部按钮证据构造轻量完成态，避免长回复完整 AX 扫描。"""
+    return {
+        "success": True,
+        "is_new_conversation": False,
+        "is_attach_to_bottom": False,
+        "window_title": None,
+        "conversation_state": "complete",
+        "conversation_state_label": "完成",
+        "input_state": "empty",
+        "input_state_label": "空输入",
+        "model": None,
+        "input_button_desc": None,
+        "input_state_elements": [],
+        "conversation_state_elements": [back_button_info],
+        "regions": {
+            "completed_signal_count": 0,
+            "completed_signal_labels": [],
+        },
+    }
+
+
+def attached_state_from_copy_button(state: dict, copy_button_info: dict) -> dict:
+    """用局部底部按钮证据构造一个轻量贴底状态，避免完整 AX 扫描。"""
+    attached = dict(state)
+    attached["conversation_state"] = "complete"
+    attached["conversation_state_label"] = "完成"
+    attached["is_attach_to_bottom"] = True
+    attached["conversation_state_elements"] = [copy_button_info]
+    regions = dict(attached.get("regions") or {})
+    regions["completed_signal_count"] = max(1, regions.get("completed_signal_count", 0))
+    regions["completed_signal_labels"] = [COPY_REPLY_LABEL]
+    attached["regions"] = regions
+    return attached
+
+
+def attached_complete_state(copy_button_info: dict) -> dict:
+    """用 `拷贝回复` 按钮证据构造轻量完成且贴底状态。"""
+    return {
+        "success": True,
+        "is_new_conversation": False,
+        "is_attach_to_bottom": True,
+        "window_title": None,
+        "conversation_state": "complete",
+        "conversation_state_label": "完成",
+        "input_state": "empty",
+        "input_state_label": "空输入",
+        "model": None,
+        "input_button_desc": None,
+        "input_state_elements": [],
+        "conversation_state_elements": [copy_button_info],
+        "regions": {
+            "completed_signal_count": 1,
+            "completed_signal_labels": [COPY_REPLY_LABEL],
+        },
+    }
+
+
+def wait_for_detached_completion(timeout: float, quiet: bool = False) -> dict:
+    """
+    等待生成结束。
+
+    长回复常见完成态是出现回到底部按钮；短回复常见完成态是直接贴底并出现
+    `拷贝回复`。两条路径必须一起观察，不能只等回到底部按钮。
+    """
+    deadline = time.time() + timeout
+    last_result = None
+    last_state_key = None
+    last_signal_key = None
+    next_full_check_at = time.time() + 1.0
+
+    while time.time() < deadline:
+        app_element, bounds, error = ensure_ai_window()
+        if error:
+            return {"success": False, "state": last_result, "error": error}
+
+        signals = scan_fast_completion_signals(app_element, bounds)
+        signal_key = (
+            signals.get("input_button_desc"),
+            signals.get("has_back_to_bottom"),
+            signals.get("has_copy_reply"),
+        )
+        if signal_key != last_signal_key:
+            _print(
+                "  快速信号: "
+                f"输入按钮={signals.get('input_button_desc') or '无'} | "
+                f"回到底部={'是' if signals.get('has_back_to_bottom') else '否'} | "
+                f"拷贝回复={'是' if signals.get('has_copy_reply') else '否'}",
+                quiet,
+            )
+            last_signal_key = signal_key
+
+        back_to_bottom = signals.get("back_to_bottom_button")
+        if back_to_bottom is not None:
+            _, info = back_to_bottom
+            _print("  快速检测到完成态：出现回到底部按钮", quiet)
+            return {"success": True, "state": detached_complete_state(info), "error": None}
+
+        copy_reply = signals.get("copy_reply_button")
+        if copy_reply is not None and signals.get("input_button_desc") != STOP_GENERATING_BUTTON_DESC:
+            _, info = copy_reply
+            _print("  快速检测到完成态：出现拷贝回复按钮", quiet)
+            return {"success": True, "state": attached_complete_state(info), "error": None}
+
+        now = time.time()
+        if now < next_full_check_at:
+            time.sleep(0.2)
+            continue
+        next_full_check_at = now + 2.0
+
+        result = check_ai_state()
+        last_result = result
+        key = (
+            result.get("success"),
+            result.get("conversation_state"),
+            result.get("input_state"),
+            result.get("input_button_desc"),
+            result.get("error"),
+        )
+        if key != last_state_key:
+            if result.get("success"):
+                _print(
+                    "  状态: "
+                    f"对话={result.get('conversation_state')} | "
+                    f"输入={result.get('input_state')} | "
+                    f"按钮={result.get('input_button_desc') or '无'}",
+                    quiet,
+                )
+            else:
+                _print(f"  状态检测失败: {result.get('error')}", quiet)
+            last_state_key = key
+
+        if (
+            result.get("success")
+            and result.get("conversation_state") == "complete"
+            and result.get("input_state") != "generating"
+        ):
+            return {"success": True, "state": result, "error": None}
+
+        time.sleep(0.2)
+
+    return {
+        "success": False,
+        "state": last_result,
+        "error": f"等待生成完成并进入稳定对话框状态超时 ({timeout}s)",
+    }
 
 
 def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
@@ -302,29 +494,34 @@ def wait_until_generation_finished(timeout: float, quiet: bool = False) -> dict:
     先尽量确认进入过 generating，再等待退出 generating。这样可以避免提交后还没来得及
     切换按钮时，被误认为已经完成。
     """
-    saw_generating = wait_for_state(
-        lambda r: r.get("success") and r.get("conversation_state") == "generating",
+    saw_generating_or_complete = wait_for_state(
+        lambda r: (
+            r.get("success")
+            and (
+                r.get("conversation_state") == "generating"
+                or (
+                    r.get("conversation_state") == "complete"
+                    and r.get("input_state") != "generating"
+                )
+            )
+        ),
         timeout=min(10.0, timeout),
         interval=0.35,
         quiet=quiet,
-        label="进入 generating",
+        label="进入 generating 或快速完成",
     )
-    if not saw_generating["success"]:
+    if saw_generating_or_complete["success"]:
+        state = saw_generating_or_complete.get("state") or {}
+        if (
+            state.get("conversation_state") == "complete"
+            and state.get("input_state") != "generating"
+        ):
+            _print("  已快速完成，未等待 generating 窗口耗尽", quiet)
+            return saw_generating_or_complete
+    else:
         _print("  未观察到 generating，继续等待非生成完成态", quiet)
 
-    remaining = timeout
-    finished = wait_for_state(
-        lambda r: (
-            r.get("success")
-            and r.get("conversation_state") == "complete"
-            and r.get("input_state") != "generating"
-        ),
-        timeout=remaining,
-        interval=0.5,
-        quiet=quiet,
-        label="生成完成并进入稳定对话框状态",
-    )
-    return finished
+    return wait_for_detached_completion(timeout=timeout, quiet=quiet)
 
 
 def wait_until_attached(timeout: float, quiet: bool = False,
@@ -362,7 +559,14 @@ def wait_until_attached(timeout: float, quiet: bool = False,
             pressed = press_back_to_bottom(timeout=2.0, quiet=quiet)
             if not pressed["success"]:
                 return {"success": False, "state": result, "error": pressed["error"]}
-            time.sleep(0.5)
+            quick_attached = wait_for_bottom_copy_button(timeout=3.0)
+            if quick_attached["success"]:
+                return {
+                    "success": True,
+                    "state": attached_state_from_copy_button(result, quick_attached["info"]),
+                    "error": None,
+                }
+            time.sleep(0.3)
             continue
 
         time.sleep(0.3)
@@ -384,15 +588,34 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
       - is_attach_to_bottom 是 True
     """
     before = get_clipboard_text()
-    pressed = press_labeled_button(
-        COPY_REPLY_LABEL,
-        timeout=timeout,
-        x_range=(0, 45),
-        y_range=(0, 85),
-        quiet=quiet,
-    )
-    if not pressed["success"]:
-        return {"success": False, "text": "", "error": pressed["error"]}
+    deadline = time.time() + timeout
+    pressed = None
+    while time.time() < deadline:
+        app_element, bounds, error = ensure_ai_window()
+        if error:
+            return {"success": False, "text": "", "error": error}
+
+        target = scan_for_copy_reply_button(app_element, bounds)
+        if target is not None:
+            elem, info = target
+            err = press(elem)
+            if err != kAXErrorSuccess:
+                return {
+                    "success": False,
+                    "text": "",
+                    "error": f"AXPressAction 失败 (error_code={err})",
+                }
+            _print(f"  已按下: {COPY_REPLY_LABEL}", quiet)
+            pressed = {"info": info}
+            break
+        time.sleep(0.2)
+
+    if pressed is None:
+        return {
+            "success": False,
+            "text": "",
+            "error": f"等待 {timeout}s 后仍未找到可按的 {COPY_REPLY_LABEL!r}",
+        }
 
     deadline = time.time() + 5.0
     text = get_clipboard_text()
