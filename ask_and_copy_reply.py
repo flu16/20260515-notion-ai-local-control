@@ -52,6 +52,7 @@ from notion_ax import (
     post_open_ai_shortcut,
     press,
     raise_window,
+    set_clipboard_text,
 )
 
 
@@ -587,7 +588,7 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
       - conversation_state 是 complete
       - is_attach_to_bottom 是 True
     """
-    before = get_clipboard_text()
+    set_clipboard_text("")
     deadline = time.time() + timeout
     pressed = None
     while time.time() < deadline:
@@ -618,21 +619,15 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
         }
 
     deadline = time.time() + 5.0
-    text = get_clipboard_text()
+    text = ""
     while time.time() < deadline:
         text = get_clipboard_text()
-        if text and text != before:
+        if text:
             break
         time.sleep(0.2)
 
     if not text:
         return {"success": False, "text": "", "error": "复制后剪贴板为空"}
-    if text == before:
-        return {
-            "success": False,
-            "text": text,
-            "error": "复制后剪贴板没有变化，可能仍是提交问题时的旧剪贴板内容",
-        }
 
     return {"success": True, "text": text, "copy_button_info": pressed["info"], "error": None}
 
@@ -680,7 +675,6 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
             "text": "",
             "step": "input",
             "error": typed["error"],
-            "input_validation": typed.get("validation"),
         }
     step_number += 1
 

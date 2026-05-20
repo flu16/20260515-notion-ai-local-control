@@ -292,7 +292,6 @@
 - 设置 `AXSelectedTextRange=(0,0)`，创建真实插入点
 - 替换已有文本时，读取 `AXNumberOfCharacters`，再设置 `AXSelectedTextRange=(0, 字符数)`
 - 写入系统剪贴板并发送 `Cmd+V`
-- 读取 `AXValue` 验证结果
 
 当前限制：
 
@@ -422,7 +421,7 @@
 3. 等待 `conversation_state=complete`
 4. 如果 `is_attach_to_bottom=false`，先按 32x32 回到底部按钮
 5. 按底部可见的 `拷贝回复`
-6. 等待剪贴板从旧值变化为新回复
+6. 清空剪贴板后等待复制结果写入，并读取当前剪贴板内容作为回复
 
 ### `watch_focus.py`
 

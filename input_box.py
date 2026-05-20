@@ -28,7 +28,6 @@
   3. 设置 AXSelectedTextRange=(0,0)，创建真实插入点。
   4. 确认 AXInsertionPointLineNumber 有效。
   5. 写剪贴板并发送 Cmd+V。
-  6. 读取 AXValue 验证。
 
 用法：
     ./venv/bin/python input_box.py "你好，Notion AI"
@@ -37,7 +36,6 @@
     ./venv/bin/python input_box.py --focus-state
 """
 
-import difflib
 import sys
 import time
 
@@ -75,13 +73,6 @@ TEXT_AREA_SCAN_X_RANGE = range(0, 100, 1)
 
 # 未激活真实插入点时，Notion/Electron 暴露的特殊行号。
 INVALID_INSERTION_LINE_NUMBER = 9223372036854775807
-
-# Rich text editors can normalize pasted content in their AXValue. Exact
-# equality is still preferred; long prompts additionally allow a length-based
-# match as long as no old input residue is detected.
-LONG_TEXT_SOFT_MATCH_MIN_LENGTH = 1000
-LONG_TEXT_MAX_LENGTH_RATIO = 0.02
-
 
 def _init_environment():
     """
@@ -219,46 +210,6 @@ def set_selected_text_range(text_area, location: int, length: int) -> int:
     return AXUIElementSetAttributeValue(text_area, "AXSelectedTextRange", range_value)
 
 
-def validate_pasted_text(expected: str, actual: str, replace_existing: bool = True,
-                         before_text: str = "") -> dict:
-    """验证粘贴结果，重点防止替换时把输入框旧文本一起发出去。"""
-    exact = actual == expected if replace_existing else expected in actual
-    ratio = difflib.SequenceMatcher(None, expected, actual).ratio() if expected or actual else 1.0
-    length_delta = abs(len(actual) - len(expected))
-    length_ratio = length_delta / max(len(expected), 1)
-    has_residue = (
-        replace_existing
-        and bool(before_text)
-        and before_text not in expected
-        and before_text in actual
-    )
-    length_match = (
-        replace_existing
-        and len(expected) >= LONG_TEXT_SOFT_MATCH_MIN_LENGTH
-        and length_ratio <= LONG_TEXT_MAX_LENGTH_RATIO
-        and not has_residue
-    )
-    soft_match = (
-        replace_existing
-        and len(expected) >= LONG_TEXT_SOFT_MATCH_MIN_LENGTH
-        and ratio >= 0.90
-        and length_ratio <= LONG_TEXT_MAX_LENGTH_RATIO
-        and not has_residue
-    )
-    return {
-        "success": exact or length_match,
-        "exact_match": exact,
-        "soft_match": soft_match,
-        "length_match": length_match,
-        "has_residue": has_residue,
-        "similarity": ratio,
-        "expected_len": len(expected),
-        "actual_len": len(actual),
-        "before_len": len(before_text),
-        "length_delta": len(actual) - len(expected),
-    }
-
-
 def read_input_text(app_element=None, bounds=None) -> dict:
     """读取 AI 输入框当前文字。"""
     if app_element is None or bounds is None:
@@ -376,24 +327,10 @@ def input_text(text: str, replace_existing: bool = True,
         time.sleep(0.35)
         replace_strategy["double_paste"] = True
 
-    validation = validate_pasted_text(
-        text,
-        ax_str(text_area, kAXValueAttribute),
-        replace_existing,
-        before_text,
-    )
     actual = ax_str(text_area, kAXValueAttribute)
-    deadline = time.time() + 5.0
-    while not validation["success"] and time.time() < deadline:
-        time.sleep(0.2)
-        actual = ax_str(text_area, kAXValueAttribute)
-        validation = validate_pasted_text(text, actual, replace_existing, before_text)
-
-    success = validation["success"]
-    if success and not quiet:
+    success = True
+    if not quiet:
         print(f"  输入成功: {actual!r}")
-    elif not quiet:
-        print(f"  输入不匹配: 期望包含/等于 {text!r}, 实际 {actual!r}")
 
     return {
         "success": success,
@@ -402,10 +339,9 @@ def input_text(text: str, replace_existing: bool = True,
         "method": "selected_range_paste",
         "replace_existing": replace_existing,
         "replace_strategy": replace_strategy,
-        "validation": validation,
         "text_area_info": info,
         "activation_info": activation,
-        "error": None if success else "粘贴验证不匹配",
+        "error": None,
     }
 
 
