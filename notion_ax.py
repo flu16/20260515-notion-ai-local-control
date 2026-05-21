@@ -24,6 +24,7 @@ from ApplicationServices import (
     kAXErrorSuccess,
     kAXFocusedAttribute,
     kAXFocusedUIElementAttribute,
+    kAXMinimizedAttribute,
     kAXPositionAttribute,
     kAXPressAction,
     kAXRaiseAction,
@@ -41,7 +42,11 @@ from Cocoa import NSWorkspace
 
 NOTION_APP_NAME = "Notion"
 NOTION_BUNDLE_ID = "notion.id"
-AI_WINDOW_TITLE_MARKERS = ("Notion AI", "命令搜索")
+AI_WINDOW_TITLE_MARKERS = ("命令搜索",)
+MAIN_WINDOW_MIN_WIDTH = 700
+MAIN_WINDOW_MIN_HEIGHT = 450
+FLOATING_AI_MIN_Y = 80
+FLOATING_AI_MAX_HEIGHT = 760
 
 KEY_A = 0
 KEY_V = 9
@@ -90,6 +95,14 @@ def ax_actions(element) -> list[str]:
     if ok != kAXErrorSuccess or actions is None:
         return []
     return list(actions)
+
+
+def ax_bool(element, attr: str) -> bool | None:
+    """Read an AX boolean attribute. Return None on failure."""
+    ok, value = AXUIElementCopyAttributeValue(element, attr, None)
+    if ok != kAXErrorSuccess or value is None:
+        return None
+    return bool(value)
 
 
 def element_info(element, description: str | None = None) -> dict:
@@ -141,36 +154,88 @@ def app_windows(app_element):
     return list(windows)
 
 
+def is_ai_window_title(title: str) -> bool:
+    return any(marker in title for marker in AI_WINDOW_TITLE_MARKERS)
+
+
+def is_minimized(window) -> bool:
+    return ax_bool(window, kAXMinimizedAttribute) is True
+
+
+def is_floating_ai_shaped_window(window) -> bool:
+    """Return True for the centered command-window shape, not the main workspace."""
+    bounds = get_bounds(window)
+    if not bounds or is_minimized(window):
+        return False
+    return (
+        bounds["y"] >= FLOATING_AI_MIN_Y
+        and bounds["height"] <= FLOATING_AI_MAX_HEIGHT
+        and bounds["width"] >= MAIN_WINDOW_MIN_WIDTH
+    )
+
+
+def is_ai_window(app_element, window) -> bool:
+    title = ax_str(window, kAXTitleAttribute)
+    return is_ai_window_title(title) or is_floating_ai_shaped_window(window)
+
+
+def is_likely_notion_main_window(app_element, window) -> bool:
+    """
+    Return True for Notion's regular workspace window, not the AI command window.
+
+    The AI command window starts with a "命令搜索" title. After the title changes
+    to a conversation topic, use the floating-window shape as a fallback. Do not
+    rely on internal AI button labels because the main Notion workspace can
+    expose the same labels.
+    """
+    title = ax_str(window, kAXTitleAttribute)
+    if is_ai_window(app_element, window):
+        return False
+
+    bounds = get_bounds(window)
+    if not bounds:
+        return False
+
+    return (
+        bounds["width"] >= MAIN_WINDOW_MIN_WIDTH
+        and bounds["height"] >= MAIN_WINDOW_MIN_HEIGHT
+    )
+
+
+def find_notion_main_windows(app_element) -> list:
+    """Return Notion workspace windows that are not AI command windows."""
+    return [window for window in app_windows(app_element) if is_likely_notion_main_window(app_element, window)]
+
+
+def minimize_window(window, settle: float = 0.2):
+    result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute, True)
+    time.sleep(settle)
+    return result
+
+
+def minimize_notion_main_windows(app_element) -> int:
+    """Minimize regular Notion windows so Cmd+Shift+J can open the AI window."""
+    minimized = 0
+    for window in find_notion_main_windows(app_element):
+        if minimize_window(window) == kAXErrorSuccess:
+            minimized += 1
+    return minimized
+
+
 def find_ai_window(app_element):
     """
     Find the Notion AI floating window.
 
-    The title starts as "命令搜索" / "Notion AI", then changes to the chat
-    topic after a message is sent. The fallback checks titled windows for an
-    AXTextArea, which is stable across those title changes.
+    The title starts as "命令搜索", then changes to the chat topic after a message
+    is sent. The fallback checks the floating-window geometry; internal labels
+    are not enough because the main Notion workspace can expose the same AI
+    controls.
     """
     windows = app_windows(app_element)
 
     for window in windows:
-        title = ax_str(window, kAXTitleAttribute)
-        if any(marker in title for marker in AI_WINDOW_TITLE_MARKERS):
+        if is_ai_window(app_element, window):
             return window
-
-    for window in windows:
-        title = ax_str(window, kAXTitleAttribute)
-        if not title:
-            continue
-        bounds = get_bounds(window)
-        if not bounds:
-            continue
-        for y_ratio in (0.30, 0.60, 0.90):
-            for x_ratio in (0.30, 0.60):
-                x = float(bounds["x"] + bounds["width"] * x_ratio)
-                y = float(bounds["y"] + bounds["height"] * y_ratio)
-                ok, elem = AXUIElementCopyElementAtPosition(app_element, x, y, None)
-                if ok == kAXErrorSuccess and elem is not None:
-                    if ax_str(elem, kAXRoleAttribute) == "AXTextArea":
-                        return window
     return None
 
 
@@ -276,6 +341,7 @@ __all__ = [
     "KEY_V",
     "Quartz",
     "ax_actions",
+    "ax_bool",
     "ax_point",
     "ax_size",
     "ax_str",
@@ -286,19 +352,28 @@ __all__ = [
     "enable_manual_accessibility",
     "find_ai_window",
     "find_notion_app",
+    "find_notion_main_windows",
     "focused_element",
     "get_ai_window_context",
     "get_bounds",
     "get_clipboard_text",
+    "is_ai_window",
+    "is_ai_window_title",
+    "is_floating_ai_shaped_window",
+    "is_likely_notion_main_window",
+    "is_minimized",
     "kAXDescriptionAttribute",
     "kAXErrorSuccess",
     "kAXFocusedAttribute",
+    "kAXMinimizedAttribute",
     "kAXPositionAttribute",
     "kAXRoleDescriptionAttribute",
     "kAXRoleAttribute",
     "kAXSizeAttribute",
     "kAXTitleAttribute",
     "kAXValueAttribute",
+    "minimize_notion_main_windows",
+    "minimize_window",
     "post_key",
     "post_key_combo",
     "post_open_ai_shortcut",

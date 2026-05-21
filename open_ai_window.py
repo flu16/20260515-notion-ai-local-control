@@ -2,9 +2,9 @@
 """
 打开 Notion AI 窗口（命令搜索）并检查窗口是否已打开。
 
-Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常是
-"命令搜索" 或 "Notion AI"。发送消息后标题会变成对话主题，因此
-窗口识别还会用 AXTextArea 作为回退特征。
+Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常包含
+"命令搜索"。发送消息后标题会变成对话主题，因此
+窗口识别还会用浮窗位置和尺寸作为回退特征。
 
 用法：
     ./venv/bin/python open_ai_window.py
@@ -13,6 +13,8 @@ Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常是
 
 注意：`--open` 也是幂等的。它会先检查窗口是否已打开；
 如果已打开，不会再次发送 Cmd+Shift+J，避免把窗口切掉。
+如果 Notion 主程序窗口存在，会先将主窗口最小化，再发送快捷键；
+否则主窗口可能拦住 Cmd+Shift+J，导致 AI 命令窗口无法唤出。
 """
 
 import sys
@@ -25,6 +27,7 @@ from notion_ax import (
     find_ai_window,
     get_bounds,
     kAXTitleAttribute,
+    minimize_notion_main_windows,
     post_open_ai_shortcut,
 )
 
@@ -80,6 +83,10 @@ def open_ai_window() -> dict:
         print("AI 窗口已打开，不发送 Cmd+Shift+J")
         return {**status, "already_open": True}
 
+    minimized_count = minimize_notion_main_windows(app_element)
+    if minimized_count:
+        print(f"已最小化 {minimized_count} 个 Notion 主程序窗口")
+
     post_open_ai_shortcut()
     print("已发送 Cmd+Shift+J，等待 AI 窗口出现...")
 
@@ -89,11 +96,12 @@ def open_ai_window() -> dict:
         status = is_ai_window_open(app_element)
         if status["open"]:
             print("  窗口已打开")
-            return {**status, "already_open": False}
+            return {**status, "already_open": False, "minimized_main_windows": minimized_count}
 
     print("  等待超时")
     return {
         **_closed("已发送 Cmd+Shift+J 但窗口未出现（超时 5 秒）"),
+        "minimized_main_windows": minimized_count,
     }
 
 

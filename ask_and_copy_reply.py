@@ -49,6 +49,7 @@ from notion_ax import (
     get_ai_window_context,
     get_clipboard_text,
     kAXErrorSuccess,
+    minimize_notion_main_windows,
     post_open_ai_shortcut,
     press,
     raise_window,
@@ -83,6 +84,7 @@ def ensure_ai_window(timeout: float = 5.0) -> tuple[object | None, dict | None, 
     if error and "未找到 AI 窗口" not in error:
         return None, None, error
 
+    minimize_notion_main_windows(app_element)
     post_open_ai_shortcut()
     deadline = time.time() + timeout
     while time.time() < deadline:
