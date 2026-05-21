@@ -13,6 +13,9 @@
 ./venv/bin/python ask_and_copy_reply.py "你的问题"
 ```
 
+这是给 AI/自动化代理调用 Notion AI 的主入口。除非是在调试底层 UI 能力，否则不要绕过它去直接点击
+Notion UI、手动找输入框、手动点复制按钮或组合多个底层脚本。
+
 它会完成完整流程：
 
 1. 确保 Notion AI 窗口打开。
@@ -24,7 +27,43 @@
 7. 清空剪贴板后等待复制结果写入，并读取当前剪贴板内容作为回复。
 8. 把回复文本输出到命令行。
 
+## 对话上下文策略
+
+调用方必须先判断这次问题和当前 Notion AI 对话是不是同一个系列。
+
+### 同一系列问题：沿用当前对话
+
+如果这次问题是在继续、追问、改写、扩展或引用上一轮 Notion AI 的回复，默认不要开新对话。
+
+```bash
+./venv/bin/python ask_and_copy_reply.py "继续上一段，给我三个例子" --timeout 180
+```
+
+不要加 `--new_conversation`。这样 Notion AI 会保留当前对话上下文，适合连续相关的问题。
+
+### 独立问题：才新开对话
+
+只有当问题应该不受当前 Notion AI 对话上下文影响时，才显式使用 `--new_conversation`：
+
+```bash
+./venv/bin/python ask_and_copy_reply.py "请总结一下什么是 MCP" --new_conversation --timeout 180
+```
+
+`--new_conversation` 会先点击 `开始新对话`，确认对话框回到新对话状态后再输入问题。
+
+不要因为“每次工具调用都想干净”而机械地加 `--new_conversation`。连续相关的多轮问答需要沿用当前对话。
+
 ## 推荐调用方式
+
+### 延续当前对话继续提问
+
+如果问题与当前 Notion AI 对话是同一个任务、同一个主题或同一轮分析，使用：
+
+```bash
+./venv/bin/python ask_and_copy_reply.py "继续上一段，给我三个例子" --timeout 180
+```
+
+不要加 `--new_conversation`。
 
 ### 新开一个对话再提问
 
@@ -36,24 +75,12 @@
 
 `--new_conversation` 会先点击 `开始新对话`，确认对话框回到新对话状态后再输入问题。
 
-这是最推荐的默认方式。
-
-### 沿用当前对话继续提问
-
-如果你明确想接着当前 Notion AI 上下文继续问，使用：
-
-```bash
-./venv/bin/python ask_and_copy_reply.py "继续上一段，给我三个例子" --timeout 180
-```
-
-不要加 `--new_conversation`。
-
 ### 获取 JSON 结果
 
 如果你是 AI 代理，推荐使用 JSON，便于判断成功或失败：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py "请只回答：OK" --new_conversation --json
+./venv/bin/python ask_and_copy_reply.py "请只回答：OK" --json
 ```
 
 成功时的典型结构：
@@ -94,11 +121,13 @@ AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
 不要把问题拼进 shell 命令字符串。先把完整问题写进系统剪贴板，然后使用：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py --from-clipboard --new_conversation --json
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --json
 ```
 
 `--from-clipboard` 会直接从系统剪贴板读取问题文本，再粘贴到 Notion AI 输入框。
 这能绕开 shell 对引号、换行、`$(...)` 和路径空格的解析问题。
+
+如果这段复杂问题是独立任务，再额外加 `--new_conversation`；如果是连续追问，不要加。
 
 ### 输入框残留会自动覆盖
 
@@ -148,7 +177,7 @@ AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
 
 可选。先开始新对话，再提交问题。
 
-推荐在独立任务中默认使用它，避免受到旧上下文影响。
+只推荐在独立任务中使用它，避免受到旧上下文影响。
 
 适合：
 
@@ -158,6 +187,8 @@ AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
 
 不适合：
 
+- 连续相关问题
+- 对上一轮回复继续追问、扩写、修正或让它换格式
 - 明确要延续当前对话
 - 要让 Notion AI 继续上一轮回答
 
@@ -296,14 +327,15 @@ unknown
 
 ```text
 1. 优先使用 ask_and_copy_reply.py。
-2. 独立问题默认加 --new_conversation。
-3. 长任务把 --timeout 提高到 600。
-4. 自动化场景使用 --json。
-5. 只在 success=true 时读取 text。
-6. 如果 success=false，读取 step 和 error 判断失败点。
-7. 不要直接用鼠标点击 Notion UI。
-8. 不要直接改 AXValue 试图输入文本。
-9. 不要用 Shift+Tab 来找复制按钮。
+2. 先判断是否同一系列问题：连续相关问题不要加 --new_conversation。
+3. 独立问题才加 --new_conversation。
+4. 长任务把 --timeout 提高到 600。
+5. 自动化场景使用 --json。
+6. 只在 success=true 时读取 text。
+7. 如果 success=false，读取 step 和 error 判断失败点。
+8. 不要直接用鼠标点击 Notion UI。
+9. 不要直接改 AXValue 试图输入文本。
+10. 不要用 Shift+Tab 来找复制按钮。
 ```
 
 推荐伪代码：
@@ -321,7 +353,6 @@ cmd = [
     "./venv/bin/python",
     "ask_and_copy_reply.py",
     "--from-clipboard",
-    "--new_conversation",
     "--timeout",
     "300",
     "--json",
