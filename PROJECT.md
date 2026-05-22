@@ -409,14 +409,14 @@ AI 命令窗口。
 命令：
 
 ```bash
-./venv/bin/python ask_and_copy_reply.py "请讲一个故事"
 ./venv/bin/python ask_and_copy_reply.py --from-clipboard --json
-./venv/bin/python ask_and_copy_reply.py "请讲一个故事" --new_conversation --timeout 600
-./venv/bin/python ask_and_copy_reply.py "请处理这个长任务" --assign_task --json
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --new_conversation --timeout 600 --json
+./venv/bin/python ask_and_copy_reply.py --from-clipboard --assign_task --json
 ```
 
-复杂问题（包含 shell 代码、引号、反斜杠、长 Markdown 或路径空格）建议先写入系统剪贴板，
-再用 `--from-clipboard` 读取，避免 shell 提前解析问题文本。
+AI/自动化调用方无论问题简单还是复杂，都建议先写入系统剪贴板，
+再用 `--from-clipboard` 读取，避免 shell 提前解析引号、换行、代码块、`$()` 或路径空格。
+直接把问题作为命令行参数只适合人工临时调试。
 
 流程：
 
