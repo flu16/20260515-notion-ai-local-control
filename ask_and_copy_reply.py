@@ -18,6 +18,9 @@
 
 用法：
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事"
+    ./venv/bin/python ask_and_copy_reply.py --from-stdin --json << 'NOTION_AI_AGENT_EOF'
+    讲一个故事
+    NOTION_AI_AGENT_EOF
     ./venv/bin/python ask_and_copy_reply.py --from-clipboard
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --new_conversation
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 300
@@ -776,12 +779,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "question",
         nargs="?",
-        help="要提交给 Notion AI 的问题；复杂文本建议用 --from-clipboard",
+        help="要提交给 Notion AI 的问题；AI/自动化调用方建议统一用 --from-stdin",
+    )
+    parser.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="从 stdin 读取问题文本；AI/自动化调用方推荐配合 heredoc 使用",
     )
     parser.add_argument(
         "--from-clipboard",
         action="store_true",
-        help="从系统剪贴板读取问题文本，避免 shell 引号、换行和路径空格解析问题",
+        help="从系统剪贴板读取问题文本；保留给人工调试和旧自动化兼容",
     )
     parser.add_argument(
         "--timeout",
@@ -803,12 +811,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--quiet", action="store_true", help="减少过程日志")
     args = parser.parse_args(argv)
-    if args.from_clipboard:
+
+    source_count = sum([
+        bool(args.from_stdin),
+        bool(args.from_clipboard),
+        args.question is not None,
+    ])
+    if source_count > 1:
+        parser.error("--from-stdin、--from-clipboard 和 question 只能使用一种")
+
+    if args.from_stdin:
+        args.question = sys.stdin.read()
+        if not args.question:
+            parser.error("--from-stdin 已设置，但 stdin 里没有文本")
+    elif args.from_clipboard:
         args.question = get_clipboard_text()
         if not args.question:
             parser.error("--from-clipboard 已设置，但系统剪贴板里没有文本")
     elif args.question is None:
-        parser.error("必须提供 question，或使用 --from-clipboard 从剪贴板读取问题")
+        parser.error("必须提供 question，或使用 --from-stdin / --from-clipboard 读取问题")
     return args
 
 
