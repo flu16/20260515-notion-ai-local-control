@@ -47,6 +47,7 @@ MAIN_WINDOW_MIN_WIDTH = 700
 MAIN_WINDOW_MIN_HEIGHT = 450
 FLOATING_AI_MIN_Y = 80
 FLOATING_AI_MAX_HEIGHT = 760
+AX_FULL_SCREEN_ATTRIBUTE = "AXFullScreen"
 
 KEY_A = 0
 KEY_V = 9
@@ -162,6 +163,27 @@ def is_minimized(window) -> bool:
     return ax_bool(window, kAXMinimizedAttribute) is True
 
 
+def is_full_screen(window) -> bool:
+    return ax_bool(window, AX_FULL_SCREEN_ATTRIBUTE) is True
+
+
+def exit_full_screen(window, timeout: float = 2.0, settle: float = 0.2) -> bool:
+    """Exit macOS fullscreen for a window and wait until AX reports it left fullscreen."""
+    if not is_full_screen(window):
+        return True
+
+    result = AXUIElementSetAttributeValue(window, AX_FULL_SCREEN_ATTRIBUTE, False)
+    if result != kAXErrorSuccess:
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(settle)
+        if not is_full_screen(window):
+            return True
+    return False
+
+
 def is_floating_ai_shaped_window(window) -> bool:
     """Return True for the centered command-window shape, not the main workspace."""
     bounds = get_bounds(window)
@@ -207,10 +229,22 @@ def find_notion_main_windows(app_element) -> list:
     return [window for window in app_windows(app_element) if is_likely_notion_main_window(app_element, window)]
 
 
-def minimize_window(window, settle: float = 0.2):
+def minimize_window(window, settle: float = 0.2, timeout: float = 2.0):
+    if is_minimized(window):
+        return kAXErrorSuccess
+
+    if is_full_screen(window):
+        exit_full_screen(window)
+        time.sleep(0.5)
+
+    deadline = time.time() + timeout
     result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute, True)
-    time.sleep(settle)
-    return result
+    while time.time() < deadline:
+        time.sleep(settle)
+        if is_minimized(window):
+            return kAXErrorSuccess
+        result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute, True)
+    return result if is_minimized(window) else -1
 
 
 def minimize_notion_main_windows(app_element) -> int:
@@ -350,6 +384,7 @@ __all__ = [
     "element_at_position",
     "element_info",
     "enable_manual_accessibility",
+    "exit_full_screen",
     "find_ai_window",
     "find_notion_app",
     "find_notion_main_windows",
@@ -360,6 +395,7 @@ __all__ = [
     "is_ai_window",
     "is_ai_window_title",
     "is_floating_ai_shaped_window",
+    "is_full_screen",
     "is_likely_notion_main_window",
     "is_minimized",
     "kAXDescriptionAttribute",

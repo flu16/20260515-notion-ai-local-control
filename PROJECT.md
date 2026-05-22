@@ -163,7 +163,7 @@
 窗口识别依赖 `notion_ax.find_ai_window()`。
 发送快捷键前会通过 `notion_ax.minimize_notion_main_windows()` 先最小化
 Notion 主程序窗口，因为主程序窗口存在时可能导致 `Cmd+Shift+J` 无法唤出
-AI 命令窗口。
+AI 命令窗口。若主窗口处于 macOS 全屏模式，会先退出全屏再最小化。
 
 ### `search_element.py`
 
