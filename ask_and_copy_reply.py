@@ -22,6 +22,7 @@
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --new_conversation
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 300
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --json
+    ./venv/bin/python ask_and_copy_reply.py "处理这个任务" --assign_task --json
 """
 
 from __future__ import annotations
@@ -527,6 +528,25 @@ def wait_until_generation_finished(timeout: float, quiet: bool = False) -> dict:
     return wait_for_detached_completion(timeout=timeout, quiet=quiet)
 
 
+def wait_until_generation_started(timeout: float, quiet: bool = False) -> dict:
+    """
+    等待回复进入 generating。
+
+    用于 --assign_task 发布任务模式：只要 Notion AI 开始生成，就代表任务已经交给
+    远端 AI，不再等待完整回复。
+    """
+    return wait_for_state(
+        lambda r: (
+            r.get("success")
+            and r.get("conversation_state") == "generating"
+        ),
+        timeout=timeout,
+        interval=0.35,
+        quiet=quiet,
+        label="进入 generating",
+    )
+
+
 def wait_until_attached(timeout: float, quiet: bool = False,
                         initial_state: dict | None = None) -> dict:
     """
@@ -636,12 +656,17 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
 
 def ask_and_copy_reply(question: str, timeout: float = 300.0,
                        new_conversation: bool = False,
+                       assign_task: bool = False,
                        quiet: bool = False) -> dict:
     """
-    完整执行：输入问题、提交、等待完成、贴底、复制回复。
+    执行提问流程。
+
+    默认完整执行：输入问题、提交、等待完成、贴底、复制回复。
+    assign_task=True 时只等待 AI 进入 generating，然后立即返回。
     """
     started_at = time.time()
-    _print("===== 提问并复制回复 =====", quiet)
+    title = "===== 发布任务 =====" if assign_task else "===== 提问并复制回复 ====="
+    _print(title, quiet)
 
     app_element, bounds, error = ensure_ai_window()
     if error:
@@ -692,6 +717,28 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
         return {"success": False, "text": "", "step": "submit", "error": submitted["error"]}
     step_number += 1
 
+    if assign_task:
+        _print(f"{step_number}. 等待 AI 开始生成", quiet)
+        started = wait_until_generation_started(timeout=timeout, quiet=quiet)
+        if not started["success"]:
+            return {
+                "success": False,
+                "text": "",
+                "mode": "assign_task",
+                "step": "wait_generating",
+                "error": started["error"],
+            }
+
+        elapsed = round(time.time() - started_at, 2)
+        return {
+            "success": True,
+            "text": "",
+            "mode": "assign_task",
+            "elapsed": elapsed,
+            "final_state": started["state"],
+            "error": None,
+        }
+
     _print(f"{step_number}. 等待生成完成", quiet)
     finished = wait_until_generation_finished(timeout=timeout, quiet=quiet)
     if not finished["success"]:
@@ -736,11 +783,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="从系统剪贴板读取问题文本，避免 shell 引号、换行和路径空格解析问题",
     )
-    parser.add_argument("--timeout", "-t", type=float, default=300.0, help="等待生成完成的最长秒数")
+    parser.add_argument(
+        "--timeout",
+        "-t",
+        type=float,
+        default=300.0,
+        help="等待生成完成的最长秒数；--assign_task 下为等待进入生成中的最长秒数",
+    )
     parser.add_argument(
         "--new_conversation",
         action="store_true",
         help="打开窗口后先按 `开始新对话`，确认进入新对话空输入状态后再提问",
+    )
+    parser.add_argument(
+        "--assign_task",
+        action="store_true",
+        help="发布任务模式：提交后只等待 AI 进入生成中，不等待完成也不复制回复",
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--quiet", action="store_true", help="减少过程日志")
@@ -760,6 +818,7 @@ def main(argv: list[str] | None = None) -> int:
         args.question,
         timeout=args.timeout,
         new_conversation=args.new_conversation,
+        assign_task=args.assign_task,
         quiet=args.quiet or args.json,
     )
 
@@ -768,6 +827,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["success"] else 1
 
     if result["success"]:
+        if result.get("mode") == "assign_task":
+            print(f"\n任务已发布，AI 已进入生成中。耗时 {result['elapsed']}s。")
+            return 0
         print(f"\n完成，耗时 {result['elapsed']}s。")
         print("\n--- AI 回复 ---")
         print(result["text"])

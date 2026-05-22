@@ -412,6 +412,7 @@ AI 命令窗口。
 ./venv/bin/python ask_and_copy_reply.py "请讲一个故事"
 ./venv/bin/python ask_and_copy_reply.py --from-clipboard --json
 ./venv/bin/python ask_and_copy_reply.py "请讲一个故事" --new_conversation --timeout 600
+./venv/bin/python ask_and_copy_reply.py "请处理这个长任务" --assign_task --json
 ```
 
 复杂问题（包含 shell 代码、引号、反斜杠、长 Markdown 或路径空格）建议先写入系统剪贴板，
@@ -425,6 +426,12 @@ AI 命令窗口。
 4. 如果 `is_attach_to_bottom=false`，先按 32x32 回到底部按钮
 5. 按底部可见的 `拷贝回复`
 6. 清空剪贴板后等待复制结果写入，并读取当前剪贴板内容作为回复
+
+发布任务模式：
+
+- 加 `--assign_task` 后，脚本在提交问题后只等待 `conversation_state=generating`
+- 一旦确认 AI 开始生成，就返回成功，不等待完整回复、不回到底部、不复制回复
+- 适合把长任务交给 Notion AI 后释放本地代理，避免本地代理长时间阻塞
 
 ### `watch_focus.py`
 
