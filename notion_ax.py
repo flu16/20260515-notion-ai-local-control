@@ -11,7 +11,12 @@ those primitives.
 import time
 
 import Quartz
-from AppKit import NSPasteboard, NSPasteboardTypeString
+from AppKit import (
+    NSFilenamesPboardType,
+    NSPasteboard,
+    NSPasteboardTypeString,
+    NSURL,
+)
 from ApplicationServices import (
     AXUIElementCopyActionNames,
     AXUIElementCopyAttributeValue,
@@ -358,6 +363,24 @@ def set_clipboard_text(text: str):
     pb.setString_forType_(text, NSPasteboardTypeString)
 
 
+def set_clipboard_files(file_paths: list[str]) -> bool:
+    """
+    Put local files on the system clipboard.
+
+    Finder-style file copy exposes NSURL objects plus the legacy filenames
+    pasteboard type. Electron apps commonly understand one of these formats
+    when Cmd+V is sent into a rich text input.
+    """
+    urls = [NSURL.fileURLWithPath_(path) for path in file_paths]
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    wrote_objects = bool(pb.writeObjects_(urls))
+    wrote_filenames = bool(
+        pb.setPropertyList_forType_(file_paths, NSFilenamesPboardType)
+    )
+    return wrote_objects or wrote_filenames
+
+
 def get_clipboard_text() -> str:
     text = NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
     return text or ""
@@ -416,6 +439,7 @@ __all__ = [
     "post_tab",
     "press",
     "raise_window",
+    "set_clipboard_files",
     "set_clipboard_text",
     "set_focused",
 ]

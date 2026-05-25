@@ -6,6 +6,7 @@
   - 读取输入框 AXValue。
   - 不使用鼠标、不使用 Shift+Tab，向输入框输入文本。
   - 不使用鼠标、不使用 Shift+Tab，清空输入框。
+  - 把本地文件写入系统剪贴板后 Cmd+V 到输入框，触发附件上传。
 
 核心发现：
   AXFocusedUIElement 是 AXTextArea 不等于真实可输入。
@@ -34,10 +35,12 @@
     ./venv/bin/python input_box.py --clear
     ./venv/bin/python input_box.py --read
     ./venv/bin/python input_box.py --focus-state
+    ./venv/bin/python input_box.py --attach-file ./report.pdf
 """
 
 import sys
 import time
+from pathlib import Path
 
 from ApplicationServices import (
     AXUIElementCopyAttributeValue,
@@ -63,6 +66,7 @@ from notion_ax import (
     KEY_V,
     post_key,
     post_key_combo,
+    set_clipboard_files,
     set_clipboard_text,
 )
 
@@ -345,6 +349,133 @@ def input_text(text: str, replace_existing: bool = True,
     }
 
 
+def normalize_file_paths(file_paths: list[str]) -> tuple[list[str], str | None]:
+    """Expand and validate local file paths before putting them on the clipboard."""
+    normalized = []
+    for raw_path in file_paths:
+        path = Path(raw_path).expanduser()
+        if not path.exists():
+            return [], f"文件不存在: {raw_path}"
+        if not path.is_file():
+            return [], f"不是普通文件: {raw_path}"
+        normalized.append(str(path.resolve()))
+    return normalized, None
+
+
+def paste_files(file_paths: list[str], app_element=None, bounds=None,
+                quiet: bool = False, settle: float = 1.0) -> dict:
+    """
+    把本地文件粘贴到 Notion AI 输入框，触发附件上传。
+
+    这里不试图用 AXValue 验证附件是否存在，因为 Notion/Electron 把附件 token
+    和输入框文本分开维护；后续全选/删除文本不会移除已经贴上的附件。
+    """
+    normalized_paths, validation_error = normalize_file_paths(file_paths)
+    if validation_error:
+        return {
+            "success": False,
+            "files": [],
+            "method": "file_clipboard_paste",
+            "error": validation_error,
+        }
+
+    if app_element is None or bounds is None:
+        app_element, bounds, pid, error = _init_environment()
+        if error:
+            return {
+                "success": False,
+                "files": normalized_paths,
+                "method": "file_clipboard_paste",
+                "error": error,
+            }
+
+    text_area, info = find_text_area(app_element, bounds)
+    if text_area is None:
+        return {
+            "success": False,
+            "files": normalized_paths,
+            "method": "file_clipboard_paste",
+            "error": "未找到 AXTextArea（输入框）",
+        }
+
+    activation = activate_text_area_insertion_point(text_area)
+    if not activation["activated"]:
+        return {
+            "success": False,
+            "files": normalized_paths,
+            "method": "file_clipboard_paste",
+            "text_area_info": info,
+            "activation_info": activation,
+            "error": "未能激活输入框真实插入点",
+        }
+
+    if not set_clipboard_files(normalized_paths):
+        return {
+            "success": False,
+            "files": normalized_paths,
+            "method": "file_clipboard_paste",
+            "text_area_info": info,
+            "activation_info": activation,
+            "error": "未能把文件写入系统剪贴板",
+        }
+
+    post_key_combo(KEY_V, Quartz.kCGEventFlagMaskCommand)
+    time.sleep(settle)
+
+    if not quiet:
+        print(f"  已粘贴文件: {', '.join(normalized_paths)}")
+
+    return {
+        "success": True,
+        "files": normalized_paths,
+        "method": "file_clipboard_paste",
+        "text_after_paste": ax_str(text_area, kAXValueAttribute),
+        "text_area_info": info,
+        "activation_info": activation,
+        "error": None,
+    }
+
+
+def paste_files_at_current_insertion_point(file_paths: list[str],
+                                           quiet: bool = False,
+                                           settle: float = 0.5) -> dict:
+    """
+    把文件粘贴到当前输入状态，不重新聚焦或重设 AXSelectedTextRange。
+
+    Notion AI 的附件粘贴在“先输入文字，再保持当前输入状态 Cmd+V 文件”时更稳定。
+    这个 helper 专门服务该连续流程。
+    """
+    normalized_paths, validation_error = normalize_file_paths(file_paths)
+    if validation_error:
+        return {
+            "success": False,
+            "files": [],
+            "method": "current_focus_file_paste",
+            "error": validation_error,
+        }
+
+    if not set_clipboard_files(normalized_paths):
+        return {
+            "success": False,
+            "files": normalized_paths,
+            "method": "current_focus_file_paste",
+            "error": "未能把文件写入系统剪贴板",
+        }
+
+    post_key_combo(KEY_V, Quartz.kCGEventFlagMaskCommand)
+    time.sleep(settle)
+
+    if not quiet:
+        print(f"  已粘贴文件: {', '.join(normalized_paths)}")
+
+    return {
+        "success": True,
+        "files": normalized_paths,
+        "method": "current_focus_file_paste",
+        "error": None,
+    }
+
+
 def set_input_text(text: str, app_element=None, bounds=None) -> dict:
     """
     设置 AI 输入框文字。
@@ -415,6 +546,7 @@ def main():
         print("    --read              读取输入框当前内容")
         print("    --focus-state       判断 AX 焦点和真实插入点状态")
         print("    --clear             清空输入框")
+        print("    --attach-file PATH  粘贴本地文件到输入框，可重复传入")
         sys.exit(0)
 
     if "--read" in sys.argv:
@@ -461,6 +593,28 @@ def main():
         result = clear_input_text()
         if result["success"]:
             print("已清空")
+        else:
+            print(f"失败: {result['error']}")
+        sys.exit(0 if result["success"] else 1)
+
+    if "--attach-file" in sys.argv:
+        args = sys.argv[1:]
+        files = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--attach-file" and i + 1 < len(args):
+                files.append(args[i + 1])
+                i += 2
+            else:
+                i += 1
+        if not files:
+            print("失败: --attach-file 后必须跟文件路径")
+            sys.exit(1)
+
+        print("===== 粘贴文件到 AI 输入框 =====")
+        result = paste_files(files)
+        if result["success"]:
+            print("文件粘贴已触发")
         else:
             print(f"失败: {result['error']}")
         sys.exit(0 if result["success"] else 1)

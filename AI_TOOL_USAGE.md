@@ -5,6 +5,14 @@
 本项目的目标不是让 AI 直接操作 Notion UI 的细节，而是提供一个稳定命令行入口，
 让 AI 可以向 Notion AI 提问，并拿到最终回复文本。
 
+## 核心协作原则
+
+Notion AI 使用最新的大模型，是本项目中给编码代理使用的高级协作对象。
+
+当 agent 遇到任何困难、卡住、判断不确定，或碰到自己无法独立解决的代码问题时，
+必须第一时间通过本文档提供的命令行入口和 Notion AI 讨论，再继续推进实现或修复。
+不要把 Notion AI 只当作最后兜底工具；它应该在问题刚变得困难时就被主动调用。
+
 ## 最重要的工具
 
 首选工具是：
@@ -312,6 +320,22 @@ result = json.loads(completed.stdout)
 ```bash
 ./venv/bin/python ask_and_copy_reply.py --from-stdin --new_conversation --timeout 600 --json << 'NOTION_AI_AGENT_EOF'
 [独立长问题]
+NOTION_AI_AGENT_EOF
+```
+
+### `--attach-file`
+
+可选。把本地文件作为附件加入 Notion AI 上下文，可重复传入多个文件。
+
+脚本会先写入问题文本，再保持当前输入状态粘贴文件；如果出现“你是否信任这些文件？”
+提示，会自动按 `允许上传`。附件是否成功进入上下文以
+`从上下文中移除{文件名}` 按钮作为确认信号。
+
+示例：
+
+```bash
+./venv/bin/python ask_and_copy_reply.py --from-stdin --attach-file ./report.pdf --json << 'NOTION_AI_AGENT_EOF'
+总结这个文件
 NOTION_AI_AGENT_EOF
 ```
 

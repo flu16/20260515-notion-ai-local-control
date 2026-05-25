@@ -22,6 +22,7 @@
     讲一个故事
     NOTION_AI_AGENT_EOF
     ./venv/bin/python ask_and_copy_reply.py --from-clipboard
+    ./venv/bin/python ask_and_copy_reply.py --attach-file ./report.pdf "总结这个文件"
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --new_conversation
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --timeout 300
     ./venv/bin/python ask_and_copy_reply.py "讲一个故事" --json
@@ -34,6 +35,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 from check_ai_state import (
     BOTTOM_COPY_Y_RANGE,
@@ -45,7 +47,7 @@ from check_ai_state import (
     scan_for_back_to_bottom_button,
     scan_for_copy_reply_button,
 )
-from input_box import input_text
+from input_box import input_text, paste_files_at_current_insertion_point
 from notion_ax import (
     bounds_tuple,
     element_at_position,
@@ -65,6 +67,8 @@ SUBMIT_LABEL = "提交 AI 消息"
 NEW_CONVERSATION_LABEL = "开始新对话"
 COPY_REPLY_LABEL = "拷贝回复"
 COPY_SUCCESS_TOAST = "回复已拷贝到剪贴板"
+ATTACHMENT_REMOVE_PREFIX = "从上下文中移除"
+ALLOW_UPLOAD_LABEL = "允许上传"
 
 
 def _print(message: str, quiet: bool = False):
@@ -208,6 +212,292 @@ def press_labeled_button(label: str, timeout: float = 5.0,
         "success": False,
         "info": None,
         "error": f"等待 {timeout}s 后仍未找到可按的 {label!r}，最后匹配数={last_count}",
+    }
+
+
+def find_attachment_remove_buttons(file_paths: list[str]) -> list[tuple[object, dict]]:
+    """
+    查找附件卡片上的“从上下文中移除...”按钮。
+
+    Notion 会把文件名文本拆成多段，但移除按钮 description 会包含完整文件名，
+    是确认附件已经进入上下文的稳定信号。
+    """
+    app_element, bounds, error = ensure_ai_window()
+    if error:
+        return []
+
+    targets = {
+        Path(path).name: Path(path)
+        for path in file_paths
+    }
+    filenames = set(targets)
+    matches = []
+    anchors = []
+
+    # Fast coarse pass: locate filename text. Notion splits "foo.txt" into
+    # "foo" and ".txt"; the stem is the most useful anchor for the card.
+    for elem, info in scan_visible_element_objects(step=2, x_range=(0, 100), y_range=(45, 100)):
+        label = element_label(info)
+        if (
+            info.get("role") == "AXButton"
+            and label.startswith(ATTACHMENT_REMOVE_PREFIX)
+            and "AXPress" in info.get("actions", [])
+            and any(filename in label for filename in filenames)
+        ):
+            matches.append((elem, info))
+            continue
+
+        if info.get("role") != "AXStaticText":
+            continue
+        position = info.get("position")
+        if not label or not position:
+            continue
+        for filename, file_path in targets.items():
+            if label in {filename, file_path.stem}:
+                anchors.append((filename, position))
+
+    if matches:
+        return matches
+
+    seen = set()
+    for filename, (anchor_x, anchor_y) in anchors:
+        # The remove button sits at the attachment card's top-right. In observed
+        # layouts it is roughly 145-170px right and 18-22px above the stem text.
+        for y in range(int(anchor_y) - 28, int(anchor_y) + 6):
+            for x in range(int(anchor_x) + 110, int(anchor_x) + 240):
+                elem = element_at_position(app_element, float(x), float(y))
+                if elem is None:
+                    continue
+                info = element_info(elem)
+                key = (
+                    info.get("role"),
+                    info.get("description"),
+                    info.get("title"),
+                    info.get("value"),
+                    info.get("position"),
+                    info.get("size"),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                label = element_label(info)
+                if (
+                    info.get("role") == "AXButton"
+                    and label.startswith(ATTACHMENT_REMOVE_PREFIX)
+                    and "AXPress" in info.get("actions", [])
+                    and filename in label
+                ):
+                    matches.append((elem, info))
+                    break
+            if matches and filename in element_label(matches[-1][1]):
+                break
+    return matches
+
+
+def wait_for_attachments_uploaded(file_paths: list[str], timeout: float = 15.0,
+                                  quiet: bool = False) -> dict:
+    """等待所有目标文件出现附件移除按钮。"""
+    filenames = {Path(path).name for path in file_paths}
+    deadline = time.time() + timeout
+    last_seen = set()
+    last_infos = []
+
+    while time.time() < deadline:
+        buttons = find_attachment_remove_buttons(file_paths)
+        seen = set()
+        infos = []
+        for _, info in buttons:
+            label = element_label(info)
+            infos.append(info)
+            for filename in filenames:
+                if filename in label:
+                    seen.add(filename)
+
+        if seen != last_seen:
+            _print(
+                "  附件上传信号: "
+                + (", ".join(sorted(seen)) if seen else "未发现"),
+                quiet,
+            )
+            last_seen = seen
+            last_infos = infos
+
+        if filenames.issubset(seen):
+            return {
+                "success": True,
+                "files": sorted(seen),
+                "attachment_buttons": infos,
+                "error": None,
+            }
+
+        time.sleep(0.3)
+
+    return {
+        "success": False,
+        "files": sorted(last_seen),
+        "attachment_buttons": last_infos,
+        "error": "等待附件进入上下文超时",
+    }
+
+
+def press_allow_upload_once(quiet: bool = False) -> dict:
+    """
+    单次扫描并按下“允许上传”按钮。
+
+    不做超时等待；用于附件等待循环中避免没有弹窗时白等。
+    """
+    saw_trust_prompt = False
+    for elem, info in scan_visible_element_objects(step=2, x_range=(0, 100), y_range=(35, 90)):
+        label = element_label(info)
+        saw_trust_prompt = saw_trust_prompt or label == "你是否信任这些文件？"
+        if label == ALLOW_UPLOAD_LABEL and "AXPress" in info.get("actions", []):
+            err = press(elem)
+            if err == kAXErrorSuccess:
+                _print(f"  已按下: {ALLOW_UPLOAD_LABEL}", quiet)
+                time.sleep(0.2)
+                return {
+                    "success": True,
+                    "pressed": True,
+                    "saw_trust_prompt": saw_trust_prompt,
+                    "info": info,
+                    "error": None,
+                }
+            return {
+                "success": False,
+                "pressed": False,
+                "saw_trust_prompt": saw_trust_prompt,
+                "info": info,
+                "error": f"AXPressAction 失败 (error_code={err})",
+            }
+
+    return {
+        "success": True,
+        "pressed": False,
+        "saw_trust_prompt": saw_trust_prompt,
+        "info": None,
+        "error": None,
+    }
+
+
+def wait_for_attachments_ready(file_paths: list[str], timeout: float = 15.0,
+                               quiet: bool = False) -> dict:
+    """
+    等待附件可提交。
+
+    快路径：一旦出现“从上下文中移除{文件名}”按钮就立即返回。
+    如果期间出现“不受信任文件”确认，按“允许上传”后继续等附件信号。
+    """
+    filenames = {Path(path).name for path in file_paths}
+    deadline = time.time() + timeout
+    last_seen = set()
+    pressed_allow_upload = False
+
+    while time.time() < deadline:
+        buttons = find_attachment_remove_buttons(file_paths)
+        seen = set()
+        infos = []
+        for _, info in buttons:
+            label = element_label(info)
+            infos.append(info)
+            for filename in filenames:
+                if filename in label:
+                    seen.add(filename)
+
+        if seen != last_seen:
+            _print(
+                "  附件上传信号: "
+                + (", ".join(sorted(seen)) if seen else "未发现"),
+                quiet,
+            )
+            last_seen = seen
+
+        if filenames.issubset(seen):
+            return {
+                "success": True,
+                "files": sorted(seen),
+                "attachment_buttons": infos,
+                "pressed_allow_upload": pressed_allow_upload,
+                "error": None,
+            }
+
+        allowed = press_allow_upload_once(quiet=quiet)
+        if not allowed["success"]:
+            return {
+                "success": False,
+                "files": sorted(last_seen),
+                "attachment_buttons": infos,
+                "pressed_allow_upload": pressed_allow_upload,
+                "error": allowed["error"],
+            }
+        pressed_allow_upload = pressed_allow_upload or allowed["pressed"]
+
+        time.sleep(0.15)
+
+    return {
+        "success": False,
+        "files": sorted(last_seen),
+        "attachment_buttons": [],
+        "pressed_allow_upload": pressed_allow_upload,
+        "error": "等待附件进入上下文超时",
+    }
+
+
+def allow_untrusted_upload_if_present(timeout: float = 2.0,
+                                      quiet: bool = False) -> dict:
+    """
+    如果 Notion 弹出“你是否信任这些文件？”确认框，按下“允许上传”。
+
+    没有弹窗时返回 skipped=True，不视为失败。
+    """
+    deadline = time.time() + timeout
+    saw_trust_prompt = False
+
+    while time.time() < deadline:
+        elements = scan_visible_element_objects(step=1, x_range=(0, 100), y_range=(0, 100))
+        saw_trust_prompt = saw_trust_prompt or any(
+            element_label(info) == "你是否信任这些文件？"
+            for _, info in elements
+        )
+
+        for elem, info in elements:
+            if element_label(info) == ALLOW_UPLOAD_LABEL and "AXPress" in info.get("actions", []):
+                err = press(elem)
+                if err == kAXErrorSuccess:
+                    _print(f"  已按下: {ALLOW_UPLOAD_LABEL}", quiet)
+                    time.sleep(0.5)
+                    return {
+                        "success": True,
+                        "pressed": True,
+                        "skipped": False,
+                        "info": info,
+                        "error": None,
+                    }
+                return {
+                    "success": False,
+                    "pressed": False,
+                    "skipped": False,
+                    "info": info,
+                    "error": f"AXPressAction 失败 (error_code={err})",
+                }
+
+        time.sleep(0.2)
+
+    if saw_trust_prompt:
+        return {
+            "success": False,
+            "pressed": False,
+            "skipped": False,
+            "info": None,
+            "error": f"看到信任文件提示，但未找到可按的 {ALLOW_UPLOAD_LABEL!r}",
+        }
+
+    return {
+        "success": True,
+        "pressed": False,
+        "skipped": True,
+        "info": None,
+        "error": None,
     }
 
 
@@ -660,6 +950,7 @@ def copy_latest_visible_reply(timeout: float = 10.0, quiet: bool = False) -> dic
 def ask_and_copy_reply(question: str, timeout: float = 300.0,
                        new_conversation: bool = False,
                        assign_task: bool = False,
+                       attach_files: list[str] | None = None,
                        quiet: bool = False) -> dict:
     """
     执行提问流程。
@@ -707,6 +998,37 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
             "error": typed["error"],
         }
     step_number += 1
+
+    if attach_files:
+        time.sleep(0.2)
+        _print(f"{step_number}. 粘贴文件", quiet)
+        pasted = paste_files_at_current_insertion_point(
+            attach_files,
+            quiet=quiet,
+        )
+        if not pasted["success"]:
+            return {
+                "success": False,
+                "text": "",
+                "step": "attach_files",
+                "error": pasted["error"],
+                "files": pasted.get("files", []),
+            }
+
+        uploaded = wait_for_attachments_ready(
+            pasted["files"],
+            timeout=15.0,
+            quiet=quiet,
+        )
+        if not uploaded["success"]:
+            return {
+                "success": False,
+                "text": "",
+                "step": "wait_attachments",
+                "error": uploaded["error"],
+                "files": uploaded.get("files", []),
+            }
+        step_number += 1
 
     _print(f"{step_number}. 提交问题", quiet)
     submitted = press_labeled_button(
@@ -808,6 +1130,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="发布任务模式：提交后只等待 AI 进入生成中，不等待完成也不复制回复",
     )
+    parser.add_argument(
+        "--attach-file",
+        action="append",
+        default=[],
+        dest="attach_files",
+        help="写入问题后把本地文件粘贴到 Notion AI 输入框，可重复传入多个文件",
+    )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--quiet", action="store_true", help="减少过程日志")
     args = parser.parse_args(argv)
@@ -840,6 +1169,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         new_conversation=args.new_conversation,
         assign_task=args.assign_task,
+        attach_files=args.attach_files,
         quiet=args.quiet or args.json,
     )
 
