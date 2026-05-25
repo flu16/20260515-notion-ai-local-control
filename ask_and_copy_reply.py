@@ -47,7 +47,7 @@ from check_ai_state import (
     scan_for_back_to_bottom_button,
     scan_for_copy_reply_button,
 )
-from input_box import input_text, paste_files_at_current_insertion_point
+from input_box import find_text_area, input_text, paste_files_at_current_insertion_point
 from notion_ax import (
     bounds_tuple,
     element_at_position,
@@ -215,6 +215,76 @@ def press_labeled_button(label: str, timeout: float = 5.0,
     }
 
 
+def wait_for_new_conversation_light(timeout: float = 4.0,
+                                    app_element=None,
+                                    bounds=None,
+                                    quiet: bool = False) -> dict:
+    """
+    轻量等待新对话就绪。
+
+    不跑完整状态机；只确认对话区域出现 Notion AI face 图像，并返回当前窗口 context。
+    输入框草稿不会被“开始新对话”清空，后续 input_text 的双粘贴会覆盖它。
+    """
+    deadline = time.time() + timeout
+    last_key = None
+    last_result = None
+
+    while time.time() < deadline:
+        if app_element is None or bounds is None:
+            app_element, bounds, error = ensure_ai_window(timeout=1.0)
+            if error:
+                last_result = {"success": False, "error": error}
+                time.sleep(0.15)
+                continue
+
+        has_notion_ai_face = False
+        for _, info in scan_visible_element_objects(
+            step=2,
+            x_range=(0, 18),
+            y_range=(45, 82),
+        ):
+            if (
+                info.get("role") == "AXImage"
+                and element_label(info) == "Notion AI face"
+            ):
+                has_notion_ai_face = True
+                break
+
+        key = (has_notion_ai_face,)
+        if key != last_key:
+            _print(
+                "  新对话轻量信号: "
+                f"Notion AI face={'是' if has_notion_ai_face else '否'}",
+                quiet,
+            )
+            last_key = key
+
+        if has_notion_ai_face:
+            return {
+                "success": True,
+                "state": {
+                    "conversation_state": "new_conversation",
+                },
+                "app_element": app_element,
+                "bounds": bounds,
+                "error": None,
+            }
+
+        last_result = {
+            "success": False,
+            "has_notion_ai_face": has_notion_ai_face,
+        }
+        time.sleep(0.15)
+
+    return {
+        "success": False,
+        "state": last_result,
+        "app_element": None,
+        "bounds": None,
+        "error": f"等待新对话轻量信号超时 ({timeout}s)",
+    }
+
+
 def find_attachment_remove_buttons(file_paths: list[str]) -> list[tuple[object, dict]]:
     """
     查找附件卡片上的“从上下文中移除...”按钮。
@@ -293,6 +363,41 @@ def find_attachment_remove_buttons(file_paths: list[str]) -> list[tuple[object, 
             if matches and filename in element_label(matches[-1][1]):
                 break
     return matches
+
+
+def find_attachment_upload_spinners() -> list[dict]:
+    """
+    查找附件卡片上传中的转圈状态。
+
+    上传中 spinner 在 AX 中通常是输入框上方的无 label AXGroup，roleDesc=状态，
+    尺寸约 18-40px。它只能说明“仍在上传中”，不是成功信号。
+    """
+    app_element, bounds, error = ensure_ai_window()
+    if error:
+        return []
+
+    text_area, text_area_info = find_text_area(app_element, bounds)
+    text_area_y = (
+        text_area_info.get("position", (None, None))[1]
+        if text_area_info
+        else None
+    )
+
+    spinners = []
+    for _, info in scan_visible_element_objects(step=2, x_range=(0, 100), y_range=(55, 98)):
+        position = info.get("position")
+        size = info.get("size") or (0, 0)
+        if (
+            info.get("role") == "AXGroup"
+            and info.get("role_description") == "状态"
+            and not element_label(info)
+            and position
+            and (text_area_y is None or position[1] < text_area_y)
+            and 18 <= size[0] <= 40
+            and 18 <= size[1] <= 40
+        ):
+            spinners.append(info)
+    return spinners
 
 
 def wait_for_attachments_uploaded(file_paths: list[str], timeout: float = 15.0,
@@ -380,17 +485,23 @@ def press_allow_upload_once(quiet: bool = False) -> dict:
     }
 
 
-def wait_for_attachments_ready(file_paths: list[str], timeout: float = 15.0,
-                               quiet: bool = False) -> dict:
+def wait_for_attachments_ready(file_paths: list[str], timeout: float = 120.0,
+                               quiet: bool = False,
+                               missing_spinner_grace: float = 5.0) -> dict:
     """
     等待附件可提交。
 
     快路径：一旦出现“从上下文中移除{文件名}”按钮就立即返回。
+    如果看到上传 spinner，说明仍在上传，继续等待。
+    如果 spinner 消失但成功按钮还没出现，给一个短暂宽限期，之后判定上传失败。
     如果期间出现“不受信任文件”确认，按“允许上传”后继续等附件信号。
     """
     filenames = {Path(path).name for path in file_paths}
     deadline = time.time() + timeout
     last_seen = set()
+    last_spinner_count = None
+    saw_spinner = False
+    spinner_missing_since = None
     pressed_allow_upload = False
 
     while time.time() < deadline:
@@ -421,6 +532,20 @@ def wait_for_attachments_ready(file_paths: list[str], timeout: float = 15.0,
                 "error": None,
             }
 
+        spinners = find_attachment_upload_spinners()
+        spinner_count = len(spinners)
+        if spinner_count != last_spinner_count:
+            _print(
+                "  附件上传中状态: "
+                + (f"{spinner_count} 个 spinner" if spinner_count else "未发现"),
+                quiet,
+            )
+            last_spinner_count = spinner_count
+
+        if spinner_count:
+            saw_spinner = True
+            spinner_missing_since = None
+
         allowed = press_allow_upload_once(quiet=quiet)
         if not allowed["success"]:
             return {
@@ -431,6 +556,22 @@ def wait_for_attachments_ready(file_paths: list[str], timeout: float = 15.0,
                 "error": allowed["error"],
             }
         pressed_allow_upload = pressed_allow_upload or allowed["pressed"]
+
+        if not spinner_count:
+            if saw_spinner:
+                if spinner_missing_since is None:
+                    spinner_missing_since = time.time()
+                elif time.time() - spinner_missing_since >= missing_spinner_grace:
+                    return {
+                        "success": False,
+                        "files": sorted(last_seen),
+                        "attachment_buttons": infos,
+                        "pressed_allow_upload": pressed_allow_upload,
+                        "error": "附件上传状态已消失，但未出现进入上下文的成功按钮",
+                    }
+            elif time.time() + missing_spinner_grace < deadline:
+                # 小文件可能一闪而过，因此没有看到 spinner 时仍给成功按钮一些出现时间。
+                pass
 
         time.sleep(0.15)
 
@@ -708,7 +849,8 @@ def wait_for_detached_completion(timeout: float, quiet: bool = False) -> dict:
     }
 
 
-def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
+def start_new_conversation(timeout: float = 10.0, quiet: bool = False,
+                           app_element=None, bounds=None) -> dict:
     """
     按下 `开始新对话`，并等待窗口回到新对话状态。
 
@@ -730,17 +872,22 @@ def start_new_conversation(timeout: float = 10.0, quiet: bool = False) -> dict:
             "error": pressed["error"],
         }
 
-    settled = wait_for_state(
-        lambda r: (
-            r.get("success")
-            and r.get("conversation_state") == "new_conversation"
-        ),
-        timeout=timeout,
-        interval=0.4,
+    if app_element is None or bounds is None:
+        app_element, bounds, error = ensure_ai_window(timeout=1.0)
+        if error:
+            return {
+                "success": False,
+                "state": None,
+                "app_element": None,
+                "bounds": None,
+                "error": error,
+            }
+    return wait_for_new_conversation_light(
+        timeout=min(timeout, 4.0),
+        app_element=app_element,
+        bounds=bounds,
         quiet=quiet,
-        label="新对话状态",
     )
-    return settled
 
 
 def wait_for_state(predicate, timeout: float, interval: float = 0.5,
@@ -969,7 +1116,12 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
     step_number = 1
     if new_conversation:
         _print(f"{step_number}. 开始新对话", quiet)
-        started = start_new_conversation(timeout=10.0, quiet=quiet)
+        started = start_new_conversation(
+            timeout=10.0,
+            quiet=quiet,
+            app_element=app_element,
+            bounds=bounds,
+        )
         if not started["success"]:
             return {
                 "success": False,
@@ -977,9 +1129,8 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
                 "step": "new_conversation",
                 "error": started["error"],
             }
-        app_element, bounds, error = ensure_ai_window()
-        if error:
-            return {"success": False, "text": "", "step": "new_conversation", "error": error}
+        app_element = started.get("app_element") or app_element
+        bounds = started.get("bounds") or bounds
         step_number += 1
 
     _print(f"{step_number}. 写入问题", quiet)
@@ -1017,7 +1168,7 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
 
         uploaded = wait_for_attachments_ready(
             pasted["files"],
-            timeout=15.0,
+            timeout=120.0,
             quiet=quiet,
         )
         if not uploaded["success"]:

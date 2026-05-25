@@ -382,6 +382,76 @@ sample_size=28x28
 actions=AXPress, AXShowMenu, AXScrollToVisible
 ```
 
+### 附件上传中：转圈状态
+
+文件粘贴到输入框后，附件卡片左侧会先出现一个正方形图标区域，里面有转圈进度。
+
+AX 中没有文件名或文字 label，通常暴露为多个重叠的状态组：
+
+```text
+role=AXGroup
+roleDesc=状态
+description=
+title=
+value=
+sample_position=(424,681)
+sample_size=31x31
+actions=AXShowMenu, AXScrollToVisible
+```
+
+同一次上传中还观察到相邻尺寸变化：
+
+```text
+sample_position=(423,680), sample_size=32x32
+sample_position=(426,683), sample_size=26x26
+sample_position=(428,685), sample_size=23x23
+```
+
+特征：
+
+- 位于附件卡片左侧图标区域。
+- 通常在 `AXTextArea` 上方。
+- `roleDesc=状态`。
+- 无 label，不能直接关联文件名。
+- size 大约 23x23 到 32x32。
+
+用途：
+
+- 可作为“附件仍在上传中”的辅助信号。
+- 不能作为上传成功信号。
+- 上传成功仍以 `从上下文中移除{文件名}` 按钮为准。
+
+大 PDF 上传观测：
+
+```text
+0.16s  出现上传中状态组
+59.87s 仍能看到上传中状态组
+63.10s 状态组消失，文件名文本出现，但成功按钮尚未命中
+66.16s 出现成功按钮：从上下文中移除稽山中学高中成绩单.pdf
+```
+
+### 附件上传成功：移除按钮
+
+附件成功进入上下文后，卡片右上角会出现移除按钮。
+
+这是当前最稳定的上传成功信号：
+
+```text
+role=AXButton
+roleDesc=按钮
+description=从上下文中移除稽山中学高中成绩单.pdf
+title=
+value=
+sample_position=(627,668)
+sample_size=16x16
+actions=AXPress, AXShowMenu, AXScrollToVisible
+```
+
+注意：
+
+- 文件名文本可能拆成 stem 和 suffix 两个 `AXStaticText`，例如 `稽山中学高中成绩单` 与 `.pdf`。
+- 移除按钮 description 会包含完整文件名，更适合作为成功判断。
+
 ## 状态判断启发
 
 ### 判断 new_conversation
