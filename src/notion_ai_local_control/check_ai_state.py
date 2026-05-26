@@ -32,9 +32,9 @@
   - 该按钮的 AXDescription 通常就是模型名，例如 `Opus 4.7` / `GPT-5.5`。
 
 用法：
-    ./venv/bin/python check_ai_state.py          # 每 0.5 秒扫描一次，只输出变化
-    ./venv/bin/python check_ai_state.py --once   # 单次人类可读输出
-    ./venv/bin/python check_ai_state.py --json   # 单次 JSON 输出
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state          # 每 0.5 秒扫描一次，只输出变化
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state --once   # 单次人类可读输出
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state --json   # 单次 JSON 输出
 """
 
 from datetime import datetime
@@ -42,7 +42,7 @@ import json
 import sys
 import time
 
-from notion_ax import (
+from .notion_ax import (
     ax_str,
     bounds_tuple,
     element_at_position,
@@ -696,7 +696,7 @@ def check_ai_state() -> dict:
     window_title = ax_str(window, kAXTitleAttribute)
     is_new_conversation = is_new_conversation_state(conv_state)
     is_attach_to_bottom = is_attach_to_bottom_state(raw_conv_state)
-    from model_selector import current_model
+    from .model_selector import current_model
 
     model_info = current_model(input_elements, text_area)
     mode_pat = current_mode_pattern(input_elements, text_area)
@@ -842,7 +842,7 @@ def main():
     use_once = "--once" in sys.argv
 
     if "-h" in sys.argv or "--help" in sys.argv:
-        print("用法: ./venv/bin/python check_ai_state.py [选项]")
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state [选项]")
         print()
         print("默认: 每 0.5 秒扫描一次，只输出变化")
         print("  --once    单次人类可读输出")

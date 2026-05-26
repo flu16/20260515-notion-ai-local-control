@@ -15,23 +15,23 @@
   - actions 包含 AXPress
 
 用法：
-    ./venv/bin/python model_selector.py --current
-    ./venv/bin/python model_selector.py --list
-    ./venv/bin/python model_selector.py "GPT-5.4"
-    ./venv/bin/python model_selector.py "自动"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector --current
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector --list
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector "GPT-5.4"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector "自动"
 """
 
 import sys
 import time
 
-from check_ai_state import (
+from .check_ai_state import (
     element_contains,
     element_label,
     find_input_text_area,
     scan_visible_elements,
     split_elements_by_input_area,
 )
-from notion_ax import (
+from .notion_ax import (
     bounds_tuple,
     element_at_position,
     element_info,
@@ -444,17 +444,17 @@ def wait_until_current_model(app_element, bounds: dict, target_model: str,
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python model_selector.py [选项或模型名]")
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector [选项或模型名]")
         print()
         print("选项:")
         print("  --current       读取当前模型")
         print("  --list          打开模型菜单并列出可见模型")
         print()
         print("示例:")
-        print('  ./venv/bin/python model_selector.py --current')
-        print('  ./venv/bin/python model_selector.py --list')
-        print('  ./venv/bin/python model_selector.py "GPT-5.4"')
-        print('  ./venv/bin/python model_selector.py "自动"')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector --current')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector --list')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector "GPT-5.4"')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.model_selector "自动"')
         sys.exit(0)
 
     if sys.argv[1] == "--current":

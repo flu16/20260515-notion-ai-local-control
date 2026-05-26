@@ -40,19 +40,19 @@
   遇到疑难问题时，应增加专门的完整属性查看能力。
 
 用法：
-    ./venv/bin/python search_element.py "提交 AI 消息"
-    ./venv/bin/python search_element.py "添加图片、PDF 或 CSV"
-    ./venv/bin/python search_element.py "拷贝回复" --region 0,55,60,90 --timeout 5
-    ./venv/bin/python search_element.py "拷贝回复" --timeout 30
-    ./venv/bin/python search_element.py --list
-    ./venv/bin/python search_element.py --list --include-empty
-    ./venv/bin/python search_element.py --list --region 25,45,75,92 --include-empty
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "提交 AI 消息"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "添加图片、PDF 或 CSV"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "拷贝回复" --region 0,55,60,90 --timeout 5
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "拷贝回复" --timeout 30
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --include-empty
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --region 25,45,75,92 --include-empty
 """
 
 import sys
 import time
 
-from notion_ax import (
+from .notion_ax import (
     ax_str,
     bounds_tuple,
     element_at_position,
@@ -386,20 +386,20 @@ def print_elements(result: dict):
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python search_element.py <目标文字> [选项]")
-        print("      ./venv/bin/python search_element.py --list [选项]")
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element <目标文字> [选项]")
+        print("      PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list [选项]")
         print()
         print("目标搜索示例（同时匹配 AXDescription、AXTitle 和 AXValue）:")
-        print('  ./venv/bin/python search_element.py "提交 AI 消息"')
-        print('  ./venv/bin/python search_element.py "添加图片、PDF 或 CSV"')
-        print('  ./venv/bin/python search_element.py "在下乐意为你效劳。"')
-        print('  ./venv/bin/python search_element.py "拷贝回复" --region 0,55,60,90 --timeout 5')
-        print('  ./venv/bin/python search_element.py "拷贝回复" --timeout 30')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "提交 AI 消息"')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "添加图片、PDF 或 CSV"')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "在下乐意为你效劳。"')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "拷贝回复" --region 0,55,60,90 --timeout 5')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "拷贝回复" --timeout 30')
         print()
         print("列表扫描示例:")
-        print('  ./venv/bin/python search_element.py --list')
-        print('  ./venv/bin/python search_element.py --list --include-empty')
-        print('  ./venv/bin/python search_element.py --list --region 25,45,75,92 --include-empty')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --include-empty')
+        print('  PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --region 25,45,75,92 --include-empty')
         print()
         print("选项:")
         print("  --timeout / -t SEC    等待超时（秒）。全局搜索用于 Tab 回退；局部搜索用于重复扫描该区域")

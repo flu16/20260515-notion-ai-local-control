@@ -6,9 +6,9 @@
       为后续自动化操作（设置输入、点击按钮）提供参考。
 
 用法：
-    ./venv/bin/python watch_focus.py                    # 默认监听 "Notion"
-    ./venv/bin/python watch_focus.py "Google Chrome"    # 按应用名监听
-    ./venv/bin/python watch_focus.py com.apple.Safari   # 按 bundle ID 监听
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_focus                    # 默认监听 "Notion"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_focus "Google Chrome"    # 按应用名监听
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_focus com.apple.Safari   # 按 bundle ID 监听
 """
 
 import sys

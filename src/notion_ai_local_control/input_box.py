@@ -31,11 +31,11 @@
   5. 写剪贴板并发送 Cmd+V。
 
 用法：
-    ./venv/bin/python input_box.py "你好，Notion AI"
-    ./venv/bin/python input_box.py --clear
-    ./venv/bin/python input_box.py --read
-    ./venv/bin/python input_box.py --focus-state
-    ./venv/bin/python input_box.py --attach-file ./report.pdf
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box "你好，Notion AI"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box --clear
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box --read
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box --focus-state
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box --attach-file ./report.pdf
 """
 
 import sys
@@ -51,7 +51,7 @@ from ApplicationServices import (
 )
 from Foundation import NSRange
 
-from notion_ax import (
+from .notion_ax import (
     Quartz,
     ax_str,
     element_at_position,
@@ -84,7 +84,7 @@ def _init_environment():
 
     如果 AI 窗口未打开，会发送 Cmd+Shift+J 并等待窗口出现。
     """
-    from notion_ax import post_open_ai_shortcut, raise_window
+    from .notion_ax import post_open_ai_shortcut, raise_window
 
     app_element, app, window, bounds, error = get_ai_window_context()
     if error and "未找到 AI 窗口" not in error:
@@ -537,10 +537,10 @@ def clear_input_text(app_element=None, bounds=None) -> dict:
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python input_box.py [选项或文字]")
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box [选项或文字]")
         print()
         print("  设置文字:")
-        print('    ./venv/bin/python input_box.py "你的问题"')
+        print('    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box "你的问题"')
         print()
         print("  操作选项:")
         print("    --read              读取输入框当前内容")

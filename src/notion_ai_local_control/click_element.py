@@ -19,16 +19,16 @@
 用法：
 ================================================================
 
-    ./venv/bin/python click_element.py "提供背景信息"
-    ./venv/bin/python click_element.py "提交 AI 消息"
-    ./venv/bin/python click_element.py "拷贝回复" --timeout 30
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "提供背景信息"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "提交 AI 消息"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "拷贝回复" --timeout 30
 """
 
 import sys
 
 # 搜索功能统一由 search_element 模块提供
-from notion_ax import kAXErrorSuccess, press
-from search_element import search_element
+from .notion_ax import kAXErrorSuccess, press
+from .search_element import search_element
 
 
 # ---------------------------------------------------------------------------
@@ -88,10 +88,10 @@ def click_button(target_description: str, wait_timeout: float = 0.0) -> dict:
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python click_element.py <description> [--timeout 秒数]")
-        print('示例: ./venv/bin/python click_element.py "提供背景信息"')
-        print('      ./venv/bin/python click_element.py "拷贝回复" --timeout 30')
-        print('      ./venv/bin/python click_element.py "提交 AI 消息"')
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element <description> [--timeout 秒数]")
+        print('示例: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "提供背景信息"')
+        print('      PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "拷贝回复" --timeout 30')
+        print('      PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.click_element "提交 AI 消息"')
         print()
         print("  --timeout / -t: 等待超时（秒），适用于 AI 输出完成后才出现的按钮")
         sys.exit(0 if len(sys.argv) >= 2 else 1)

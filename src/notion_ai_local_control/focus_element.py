@@ -3,15 +3,15 @@
 聚焦到 Notion AI 窗口中的指定元素。
 
 用法:
-    ./venv/bin/python focus_element.py "提供背景信息"
-    ./venv/bin/python focus_element.py "设置"
-    ./venv/bin/python focus_element.py "提交 AI 消息"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.focus_element "提供背景信息"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.focus_element "设置"
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.focus_element "提交 AI 消息"
 """
 
 import sys
 
-from notion_ax import set_focused
-from search_element import search_element
+from .notion_ax import set_focused
+from .search_element import search_element
 
 
 def focus_element(target_description: str) -> dict:
@@ -38,8 +38,8 @@ def focus_element(target_description: str) -> dict:
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python focus_element.py <description>")
-        print('示例: ./venv/bin/python focus_element.py "提供背景信息"')
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.focus_element <description>")
+        print('示例: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.focus_element "提供背景信息"')
         sys.exit(0)
 
     target = sys.argv[1]

@@ -6,10 +6,10 @@
 如果 AI 窗口未打开，会持续等待，不会退出。
 
 用法:
-    ./venv/bin/python watch_state.py              # 默认：只在变化时输出
-    ./venv/bin/python watch_state.py --poll        # 每 0.5 秒都输出
-    ./venv/bin/python watch_state.py --json       # JSON 格式输出
-    ./venv/bin/python watch_state.py --duration 60 # 只跑60秒
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_state              # 默认：只在变化时输出
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_state --poll        # 每 0.5 秒都输出
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_state --json       # JSON 格式输出
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_state --duration 60 # 只跑60秒
 """
 
 import argparse
@@ -17,7 +17,7 @@ import json
 import time
 from datetime import datetime
 
-from check_ai_state import check_ai_state
+from .check_ai_state import check_ai_state
 
 
 def format_state(result: dict) -> str:

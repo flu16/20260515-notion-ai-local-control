@@ -18,10 +18,10 @@
 ## 常用扫描命令
 
 ```bash
-./venv/bin/python search_element.py --list --include-empty --step 1
-./venv/bin/python search_element.py --list --region 0,35,70,75 --include-empty --step 1
-./venv/bin/python search_element.py "在下乐意为你效劳。" --region 0,55,50,85 --step 1
-./venv/bin/python search_element.py "拷贝回复" --region 0,35,70,75 --step 1
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --include-empty --step 1
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element --list --region 0,35,70,75 --include-empty --step 1
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "在下乐意为你效劳。" --region 0,55,50,85 --step 1
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.search_element "拷贝回复" --region 0,35,70,75 --step 1
 ```
 
 对于很小的正文文本，例如单字符 `2`，百分比 `step=1` 仍可能漏扫。
@@ -183,7 +183,7 @@ actions=AXShowMenu, AXScrollToVisible
 
 ### 回复操作按钮：拷贝回复
 
-这是 `ask_and_copy_reply.py` 在完成态、贴住底部后要点击的目标按钮。
+这是 `notion-ai ask` 在完成态、贴住底部后要点击的目标按钮。
 它通常出现在最新回复底部操作区。
 
 ```text

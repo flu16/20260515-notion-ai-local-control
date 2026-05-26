@@ -7,9 +7,9 @@ Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常包含
 窗口识别还会用浮窗位置和尺寸作为回退特征。
 
 用法：
-    ./venv/bin/python open_ai_window.py
-    ./venv/bin/python open_ai_window.py --check
-    ./venv/bin/python open_ai_window.py --open
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.open_ai_window
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.open_ai_window --check
+    PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.open_ai_window --open
 
 注意：`--open` 也是幂等的。它会先检查窗口是否已打开；
 如果已打开，不会再次发送 Cmd+Shift+J，避免把窗口切掉。
@@ -20,7 +20,7 @@ Notion AI 浮动窗口通过 Cmd+Shift+J 打开，初始标题通常包含
 import sys
 import time
 
-from notion_ax import (
+from .notion_ax import (
     ax_str,
     create_notion_app_element,
     enable_manual_accessibility,
@@ -120,7 +120,7 @@ def ensure_ai_window_open() -> dict:
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
-        print("用法: ./venv/bin/python open_ai_window.py [选项]")
+        print("用法: PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.open_ai_window [选项]")
         print("  (无参数)          确保窗口打开（先检查，没开则发送 Cmd+Shift+J）")
         print("  --check            仅检查窗口是否已打开")
         print("  --open             确保窗口打开（已打开则不发送 Cmd+Shift+J）")
