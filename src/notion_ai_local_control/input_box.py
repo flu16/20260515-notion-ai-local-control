@@ -6,7 +6,11 @@
   - 读取输入框 AXValue。
   - 不使用鼠标、不使用 Shift+Tab，向输入框输入文本。
   - 不使用鼠标、不使用 Shift+Tab，清空输入框。
-  - 把本地文件写入系统剪贴板后 Cmd+V 到输入框，触发附件上传。
+  - 把 Notion AI 支持的本地文件写入系统剪贴板后 Cmd+V 到输入框，触发附件上传。
+
+附件文件类型限制：
+  Notion AI 当前支持图片、PDF、CSV、Markdown、纯文本。这里在粘贴前
+  按扩展名拦截，避免把不支持的文件交给 UI 后才失败。
 
 核心发现：
   AXFocusedUIElement 是 AXTextArea 不等于真实可输入。
@@ -77,6 +81,24 @@ TEXT_AREA_SCAN_X_RANGE = range(0, 100, 1)
 
 # 未激活真实插入点时，Notion/Electron 暴露的特殊行号。
 INVALID_INSERTION_LINE_NUMBER = 9223372036854775807
+
+SUPPORTED_ATTACHMENT_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".heic",
+    ".heif",
+    ".pdf",
+    ".csv",
+    ".md",
+    ".markdown",
+    ".txt",
+}
+
+SUPPORTED_ATTACHMENT_DESCRIPTION = "图片、PDF、CSV、Markdown、纯文本"
+
 
 def _init_environment():
     """
@@ -358,6 +380,11 @@ def normalize_file_paths(file_paths: list[str]) -> tuple[list[str], str | None]:
             return [], f"文件不存在: {raw_path}"
         if not path.is_file():
             return [], f"不是普通文件: {raw_path}"
+        if path.suffix.lower() not in SUPPORTED_ATTACHMENT_EXTENSIONS:
+            return [], (
+                f"Notion AI 支持的附件类型为{SUPPORTED_ATTACHMENT_DESCRIPTION}: "
+                f"{raw_path}"
+            )
         normalized.append(str(path.resolve()))
     return normalized, None
 
@@ -366,6 +393,8 @@ def paste_files(file_paths: list[str], app_element=None, bounds=None,
                 quiet: bool = False, settle: float = 1.0) -> dict:
     """
     把本地文件粘贴到 Notion AI 输入框，触发附件上传。
+
+    Notion AI 当前支持图片、PDF、CSV、Markdown、纯文本；其他扩展名会在粘贴前返回错误。
 
     这里不试图用 AXValue 验证附件是否存在，因为 Notion/Electron 把附件 token
     和输入框文本分开维护；后续全选/删除文本不会移除已经贴上的附件。
@@ -546,7 +575,7 @@ def main():
         print("    --read              读取输入框当前内容")
         print("    --focus-state       判断 AX 焦点和真实插入点状态")
         print("    --clear             清空输入框")
-        print("    --attach-file PATH  粘贴本地文件到输入框，可重复传入")
+        print("    --attach-file PATH  粘贴图片、PDF、CSV、Markdown、纯文本到输入框，可重复传入")
         sys.exit(0)
 
     if "--read" in sys.argv:

@@ -42,8 +42,8 @@ def find_attachment_remove_buttons(file_paths: list[str]) -> list[tuple[object, 
     matches = []
     anchors = []
 
-    # Fast coarse pass: locate filename text. Notion splits "foo.txt" into
-    # "foo" and ".txt"; the stem is the most useful anchor for the card.
+    # Fast coarse pass: locate filename text. Notion splits "foo.pdf" into
+    # "foo" and ".pdf"; the stem is the most useful anchor for the card.
     for elem, info in scan_visible_element_objects(step=2, x_range=(0, 100), y_range=(45, 100)):
         label = element_label(info)
         if (

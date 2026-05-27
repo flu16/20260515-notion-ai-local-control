@@ -208,7 +208,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask "1+1" --json
 如果改了附件逻辑，再准备一个明确的测试文件并跑：
 
 ```bash
-./venv/bin/notion-ai ask --attach-file ./path/to/test-file.txt "总结这个文件" --json
+./venv/bin/notion-ai ask --attach-file ./path/to/test-file.md "总结这个文件" --json
 ```
 
 ## 后续整理建议

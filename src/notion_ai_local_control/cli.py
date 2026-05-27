@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 
 
-COMMANDS: dict[str, tuple[str, str, str]] = {
+COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
     "ask": (
         "notion_ai_local_control.ask_and_copy_reply",
         "main",
@@ -18,6 +18,14 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Inspect the current Notion AI state.",
     ),
+    "open": (
+        "notion_ai_local_control.open_ai_window",
+        "main",
+        "Open or check the Notion AI window.",
+    ),
+}
+
+DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
     "search": (
         "notion_ai_local_control.search_element",
         "main",
@@ -32,11 +40,6 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "notion_ai_local_control.model_selector",
         "main",
         "Read or switch the current Notion AI model.",
-    ),
-    "open": (
-        "notion_ai_local_control.open_ai_window",
-        "main",
-        "Open or check the Notion AI window.",
     ),
     "click": (
         "notion_ai_local_control.click_element",
@@ -60,22 +63,33 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+COMMANDS: dict[str, tuple[str, str, str]] = {
+    **COMMON_COMMANDS,
+    **DEBUG_COMMANDS,
+}
+
 
 def print_help() -> None:
     print("用法: notion-ai <command> [args...]")
     print()
-    print("常用命令:")
+    print("常用示例:")
     print('  notion-ai ask "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
     print("  notion-ai state --json")
+    print("  notion-ai open --check")
+    print()
+    print("调试示例:")
     print('  notion-ai search "拷贝回复"')
     print("  notion-ai input --read")
     print("  notion-ai model --current")
-    print("  notion-ai open --check")
     print()
-    print("可用 command:")
+    print("常用 command:")
     width = max(len(name) for name in COMMANDS)
-    for name, (_, _, description) in COMMANDS.items():
+    for name, (_, _, description) in COMMON_COMMANDS.items():
+        print(f"  {name.ljust(width)}  {description}")
+    print()
+    print("调试 command:")
+    for name, (_, _, description) in DEBUG_COMMANDS.items():
         print(f"  {name.ljust(width)}  {description}")
     print()
     print("查看子命令帮助:")

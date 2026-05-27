@@ -13,6 +13,7 @@
 - 点击不依赖文本输入的按钮或弹出控件
 - 读取输入框内容
 - 探索无鼠标、无 DOM 注入的文本输入方案
+- 粘贴 Notion AI 支持的附件：图片、PDF、CSV、Markdown、纯文本
 - 等待并复制 Notion AI 回复
 
 ## 核心原则
@@ -41,43 +42,62 @@
 根目录不保留 Python 入口文件。正式入口是统一 CLI `notion-ai <command>`；
 未安装时可以通过 `PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.<module>` 调用包内模块。
 
+### 附件类型边界
+
+Notion AI 当前支持上传图片、PDF、CSV、Markdown、纯文本。本项目在粘贴附件前做本地扩展名校验，
+避免把不支持的文件交给 UI 后再失败。
+
+当前允许：
+
+- 图片：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`、`.heif`
+- 文档/数据：`.pdf`、`.csv`
+- Markdown / 纯文本：`.md`、`.markdown`、`.txt`
+
+其他文件类型应在调用前转换成上述格式，或者不要通过 `--attach-file` 传入。
+
 ## 项目结构
 
 ```text
 .
-├── pyproject.toml
-├── README.md
-├── PROJECT.md
-├── AI_TOOL_USAGE.md
-├── ASK_FLOW_REFACTOR.md
-├── PROBLEM_SOLUTIONS.md
-├── AX_ELEMENTS.md
-├── src/
-│   └── notion_ai_local_control/
-│       ├── __init__.py
-│       ├── cli.py
-│       ├── notion_ax.py
-│       ├── ask_and_copy_reply.py
-│       ├── ask_flow.py
-│       ├── conversation_actions.py
-│       ├── attachment_flow.py
-│       ├── generation_wait.py
-│       ├── reply_copy.py
-│       ├── open_ai_window.py
-│       ├── search_element.py
-│       ├── click_element.py
-│       ├── focus_element.py
-│       ├── input_box.py
-│       ├── model_selector.py
-│       ├── check_ai_state.py
-│       ├── watch_focus.py
-│       └── watch_state.py
+├── README.md                    # 快速上手
+├── PROJECT.md                   # 项目结构和维护原则
+├── docs/                        # 深入说明和历史记录
+├── pyproject.toml               # package 与 CLI 配置
+├── src/notion_ai_local_control/  # 实现代码
 ├── .claude/settings.local.json
-└── venv/
+└── venv/                        # 本地虚拟环境，不属于项目逻辑
+```
+
+包内模块按职责分组：
+
+```text
+CLI
+  cli.py                         # notion-ai 统一入口
+  ask_and_copy_reply.py          # ask 参数解析与输出格式
+
+Ask workflow
+  ask_flow.py                    # 主提问流程编排
+  conversation_actions.py        # 窗口、扫描、按钮动作
+  generation_wait.py             # 生成完成与贴底等待
+  reply_copy.py                  # 复制最新回复
+  attachment_flow.py             # 附件上传等待
+
+AX primitives
+  notion_ax.py                   # macOS AX / Quartz / 剪贴板底层能力
+  input_box.py                   # 输入框读写和文件粘贴
+  check_ai_state.py              # Notion AI 状态判断
+  search_element.py              # AX 元素搜索和列表扫描
+
+Tools
+  model_selector.py              # 模型读取和切换
+  open_ai_window.py              # 打开/检查 AI 窗口
+  click_element.py               # 调试点击
+  focus_element.py               # 调试聚焦
+  watch_state.py                 # 状态监听
+  watch_focus.py                 # 焦点监听
 ```
 
 `src/notion_ai_local_control/` 是真正的 Python 包。根目录只保留项目配置和文档。
-`venv/` 是本地 Python 虚拟环境，不属于项目逻辑。
 
 ## 统一 CLI
 
@@ -104,7 +124,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli state --json
 
 ## 文件说明
 
-### `AI_TOOL_USAGE.md`
+### `docs/AI_TOOL_USAGE.md`
 
 给 OpenClaude、Claude Code、Codex 等 AI/编码代理读取的工具使用说明。
 
@@ -115,7 +135,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli state --json
 - 如何解析 `success`、`text`、`conversation_state`、`is_attach_to_bottom`
 - 哪些底层脚本不建议 AI 直接调用
 
-### `PROBLEM_SOLUTIONS.md`
+### `docs/PROBLEM_SOLUTIONS.md`
 
 记录项目关键难点、失败路径、误判原因和最终解决方案。
 
@@ -133,7 +153,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli state --json
 - `AXInsertionPointLineNumber` / `AXSelectedText` 对真实插入点的判断价值
 - `AXSelectedTextRange=(0,0)` 激活真实输入的解决方法
 
-### `AX_ELEMENTS.md`
+### `docs/AX_ELEMENTS.md`
 
 记录 Notion AI 浮动窗口中已观察到的 AX 元素属性样本。
 
@@ -344,7 +364,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.input_box --clear
 - 不能直接写 `AXValue`，那只是 AX 层假写入，不等于真实输入
 - 不使用鼠标，不使用 `Shift+Tab`
 
-当前稳定输入路径详见 `PROBLEM_SOLUTIONS.md`。
+当前稳定输入路径详见 `docs/PROBLEM_SOLUTIONS.md`。
 
 ### `src/notion_ai_local_control/model_selector.py`
 

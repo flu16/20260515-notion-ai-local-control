@@ -78,7 +78,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         default=[],
         dest="attach_files",
-        help="写入问题后把本地文件粘贴到 Notion AI 输入框，可重复传入多个文件",
+        help="写入问题后把图片、PDF、CSV、Markdown、纯文本粘贴到 Notion AI 输入框，可重复传入多个文件",
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     parser.add_argument("--quiet", action="store_true", help="减少过程日志")
