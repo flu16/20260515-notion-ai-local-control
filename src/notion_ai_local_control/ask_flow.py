@@ -12,7 +12,7 @@ from .input_box import input_text, paste_files_at_current_insertion_point
 from .reply_copy import copy_latest_visible_reply
 
 
-SUBMIT_LABEL = "提交 AI 消息"
+SUBMIT_LABELS = ("提交 AI 消息", "Submit AI message")
 
 
 def _print(message: str, quiet: bool = False):
@@ -110,7 +110,7 @@ def ask_and_copy_reply(question: str, timeout: float = 300.0,
 
     _print(f"{step_number}. 提交问题", quiet)
     submitted = press_labeled_button(
-        SUBMIT_LABEL,
+        SUBMIT_LABELS,
         timeout=5.0,
         x_range=(70, 100),
         y_range=(82, 100),

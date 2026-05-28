@@ -13,6 +13,11 @@ COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Ask Notion AI and copy the final reply.",
     ),
+    "ask-cdp": (
+        "notion_ai_local_control.ask_cdp",
+        "main",
+        "Beta: ask Notion AI through Electron CDP and copy the reply.",
+    ),
     "state": (
         "notion_ai_local_control.check_ai_state",
         "main",
@@ -61,6 +66,11 @@ DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Continuously watch focused Accessibility elements.",
     ),
+    "beta-cdp-input": (
+        "notion_ai_local_control.beta_cdp_input",
+        "main",
+        "Beta: write to Notion AI via Electron CDP DOM events.",
+    ),
 }
 
 COMMANDS: dict[str, tuple[str, str, str]] = {
@@ -74,6 +84,7 @@ def print_help() -> None:
     print()
     print("常用示例:")
     print('  notion-ai ask "1+1" --json')
+    print('  notion-ai ask-cdp "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
     print("  notion-ai state --json")
     print("  notion-ai open --check")

@@ -121,9 +121,18 @@ def bottom_most(elements: list[tuple[object, dict]]) -> tuple[object, dict] | No
     )
 
 
-def find_labeled_button(label: str, x_range=(0, 100), y_range=(0, 100),
+def label_options(label: str | tuple[str, ...] | list[str] | set[str]) -> set[str]:
+    """把单个 label 或多个候选 label 统一成集合。"""
+    if isinstance(label, str):
+        return {label}
+    return set(label)
+
+
+def find_labeled_button(label: str | tuple[str, ...] | list[str] | set[str],
+                        x_range=(0, 100), y_range=(0, 100),
                         step: int = 1) -> tuple[object, dict] | None:
     """在指定可见区域内查找最靠下的可按 label 按钮。"""
+    labels = label_options(label)
     matches = [
         (elem, info)
         for elem, info in scan_visible_element_objects(
@@ -131,12 +140,13 @@ def find_labeled_button(label: str, x_range=(0, 100), y_range=(0, 100),
             x_range=x_range,
             y_range=y_range,
         )
-        if element_label(info) == label and "AXPress" in info.get("actions", [])
+        if element_label(info) in labels and "AXPress" in info.get("actions", [])
     ]
     return bottom_most(matches)
 
 
-def press_labeled_button(label: str, timeout: float = 5.0,
+def press_labeled_button(label: str | tuple[str, ...] | list[str] | set[str],
+                         timeout: float = 5.0,
                          x_range=(0, 100), y_range=(0, 100),
                          step: int = 1, quiet: bool = False) -> dict:
     """
@@ -146,6 +156,8 @@ def press_labeled_button(label: str, timeout: float = 5.0,
     """
     deadline = time.time() + timeout
     last_count = 0
+    labels = label_options(label)
+    label_text = " / ".join(sorted(labels))
     while time.time() < deadline:
         target = find_labeled_button(label, x_range=x_range, y_range=y_range, step=step)
         last_count = 1 if target is not None else 0
@@ -153,7 +165,7 @@ def press_labeled_button(label: str, timeout: float = 5.0,
             elem, info = target
             err = press(elem)
             if err == kAXErrorSuccess:
-                _print(f"  已按下: {label}", quiet)
+                _print(f"  已按下: {element_label(info) or label_text}", quiet)
                 return {"success": True, "info": info, "error": None}
             return {
                 "success": False,
@@ -165,7 +177,7 @@ def press_labeled_button(label: str, timeout: float = 5.0,
     return {
         "success": False,
         "info": None,
-        "error": f"等待 {timeout}s 后仍未找到可按的 {label!r}，最后匹配数={last_count}",
+        "error": f"等待 {timeout}s 后仍未找到可按的 {label_text!r}，最后匹配数={last_count}",
     }
 
 

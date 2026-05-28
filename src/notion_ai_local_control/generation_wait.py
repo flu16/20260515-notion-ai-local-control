@@ -6,8 +6,8 @@ from __future__ import annotations
 import time
 
 from .check_ai_state import (
-    STOP_GENERATING_BUTTON_DESC,
     check_ai_state,
+    is_stop_generating_button_desc,
     scan_fast_completion_signals,
 )
 from .conversation_actions import ensure_ai_window, press_back_to_bottom
@@ -122,7 +122,7 @@ def wait_for_detached_completion(timeout: float, quiet: bool = False) -> dict:
             return {"success": True, "state": detached_complete_state(info), "error": None}
 
         copy_reply = signals.get("copy_reply_button")
-        if copy_reply is not None and signals.get("input_button_desc") != STOP_GENERATING_BUTTON_DESC:
+        if copy_reply is not None and not is_stop_generating_button_desc(signals.get("input_button_desc")):
             _, info = copy_reply
             _print("  快速检测到完成态：出现拷贝回复按钮", quiet)
             return {"success": True, "state": attached_complete_state(info), "error": None}

@@ -54,12 +54,17 @@ from .notion_ax import (
 
 
 STOP_GENERATING_BUTTON_DESC = "停止 AI 消息"
-SUBMIT_BUTTON_DESC = "提交 AI 消息"
-COPY_REPLY_LABEL = "拷贝回复"
-INPUT_BUTTON_DESCRIPTIONS = {
+STOP_GENERATING_BUTTON_DESCS = {
     STOP_GENERATING_BUTTON_DESC,
-    SUBMIT_BUTTON_DESC,
+    "Stop AI message",
 }
+SUBMIT_BUTTON_DESC = "提交 AI 消息"
+SUBMIT_BUTTON_DESCS = {
+    SUBMIT_BUTTON_DESC,
+    "Submit AI message",
+}
+COPY_REPLY_LABEL = "拷贝回复"
+INPUT_BUTTON_DESCRIPTIONS = STOP_GENERATING_BUTTON_DESCS | SUBMIT_BUTTON_DESCS
 
 NEW_CONVERSATION_GREETINGS = {
     "在下乐意为你效劳。",
@@ -285,7 +290,17 @@ def is_stop_generating_button(info: dict) -> bool:
 
     该按钮通常在输入框区域右下角，AXDescription 为 `停止 AI 消息`。
     """
-    return element_label(info) == STOP_GENERATING_BUTTON_DESC
+    return element_label(info) in STOP_GENERATING_BUTTON_DESCS
+
+
+def is_submit_button_desc(label: str | None) -> bool:
+    """判断输入区按钮文字是否表示提交按钮。"""
+    return label in SUBMIT_BUTTON_DESCS
+
+
+def is_stop_generating_button_desc(label: str | None) -> bool:
+    """判断输入区按钮文字是否表示停止生成按钮。"""
+    return label in STOP_GENERATING_BUTTON_DESCS
 
 
 def element_contains(container: dict, child: dict) -> bool:
@@ -513,8 +528,8 @@ def scan_fast_completion_signals(app_element, bounds: dict) -> dict:
 
     return {
         "input_button_desc": input_button_desc,
-        "stop_visible": input_button_desc == STOP_GENERATING_BUTTON_DESC,
-        "submit_visible": input_button_desc == SUBMIT_BUTTON_DESC,
+        "stop_visible": is_stop_generating_button_desc(input_button_desc),
+        "submit_visible": is_submit_button_desc(input_button_desc),
         "back_to_bottom_button": back_to_bottom,
         "copy_reply_button": copy_reply,
         "has_back_to_bottom": back_to_bottom is not None,
