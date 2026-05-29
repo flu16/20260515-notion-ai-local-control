@@ -139,7 +139,8 @@ def ensure_cdp_ai_ready(port: int, auto_restart: bool, restart: bool,
         launch_info = restart_notion_with_cdp(port)
         wait_for_cdp_server(port)
 
-    status = wait_for_cdp_ready(port, QUICK_SEARCH_URL, timeout, interval)
+    ready_timeout = max(timeout, 30.0) if launch_info else timeout
+    status = wait_for_cdp_ready(port, QUICK_SEARCH_URL, ready_timeout, interval)
     return {"launch_info": launch_info, "status": status}
 
 

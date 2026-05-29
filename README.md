@@ -109,6 +109,7 @@ Tools
 - `docs/ASK_FLOW_REFACTOR.md`：ask 流程拆分思路。
 - `docs/PROBLEM_SOLUTIONS.md`：关键问题和解决方案记录。
 - `docs/AX_ELEMENTS.md`：已观察到的 Accessibility 元素样本。
+- `docs/LOCKSCREEN_QUICK_SEARCH_RESEARCH.md`：锁屏状态、quick-search 打开路径和 Notion 内部只读调查记录。
 
 ## 验证
 
