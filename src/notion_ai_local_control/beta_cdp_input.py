@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Beta CDP input path for Notion AI.
+"""CDP input path for Notion AI.
 
-This module intentionally stays separate from the stable AX/clipboard flow.
-It only drives the renderer DOM for the Notion AI quick-search window and
-does not call Notion's private network APIs.
+This module drives only the renderer DOM for the Notion AI quick-search
+window and does not call Notion's private network APIs.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import argparse
 import base64
 import json
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -24,8 +24,8 @@ from pathlib import Path
 
 DEFAULT_PORT = 9222
 NOTION_BUNDLE_ID = "notion.id"
+NOTION_EXECUTABLE = Path("/Applications/Notion.app/Contents/MacOS/Notion")
 QUICK_SEARCH_URL = "https://www.notion.so/quick-search"
-AI_URL = "https://www.notion.so/ai"
 TEXTBOX_SELECTOR = '[contenteditable="true"][role="textbox"]'
 DEFAULT_WAIT_TEXTBOX_TIMEOUT = 10.0
 DEFAULT_WAIT_TEXTBOX_INTERVAL = 0.2
@@ -93,6 +93,19 @@ def cdp_is_running(port: int = DEFAULT_PORT) -> bool:
     except (OSError, urllib.error.URLError):
         return False
     return True
+
+
+def wait_for_cdp_server(
+    port: int = DEFAULT_PORT,
+    timeout: float = 10.0,
+    interval: float = 0.2,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cdp_is_running(port):
+            return
+        time.sleep(max(interval, 0.05))
+    raise CdpError(f"CDP did not become reachable on 127.0.0.1:{port} after {timeout:.1f}s")
 
 
 def list_targets(port: int = DEFAULT_PORT) -> list[dict]:
@@ -191,9 +204,14 @@ class CdpSession:
             self.sock.close()
             self.sock = None
 
-    def call(self, method: str, params: dict | None = None):
+    def call(self, method: str, params: dict | None = None,
+             timeout: float | None = None):
         if self.sock is None:
             raise CdpError("CDP session is not open")
+
+        old_timeout = self.sock.gettimeout()
+        if timeout is not None:
+            self.sock.settimeout(max(timeout, 0.1))
 
         message_id = self.next_message_id
         self.next_message_id += 1
@@ -204,16 +222,25 @@ class CdpSession:
         }).encode("utf-8")
         _send_ws_text(self.sock, payload)
 
-        while True:
-            opcode, frame_payload = _read_ws_frame(self.sock)
-            if opcode == 1:
-                message = json.loads(frame_payload.decode("utf-8"))
-                if message.get("id") == message_id:
-                    if "error" in message:
-                        raise CdpError(json.dumps(message["error"], ensure_ascii=False))
-                    return message.get("result")
-            if opcode == 8:
-                raise CdpError("WebSocket closed before CDP response")
+        try:
+            while True:
+                try:
+                    opcode, frame_payload = _read_ws_frame(self.sock)
+                except socket.timeout as exc:
+                    raise CdpError(
+                        f"Timed out waiting for CDP response to {method}"
+                    ) from exc
+                if opcode == 1:
+                    message = json.loads(frame_payload.decode("utf-8"))
+                    if message.get("id") == message_id:
+                        if "error" in message:
+                            raise CdpError(json.dumps(message["error"], ensure_ascii=False))
+                        return message.get("result")
+                if opcode == 8:
+                    raise CdpError("WebSocket closed before CDP response")
+        finally:
+            if timeout is not None:
+                self.sock.settimeout(old_timeout)
 
     def wait_for_event(self, method: str, timeout: float = 5.0) -> dict | None:
         if self.sock is None:
@@ -240,10 +267,10 @@ class CdpSession:
 
 
 def cdp_call(websocket_url: str, method: str, params: dict | None = None,
-             message_id: int = 1):
+             message_id: int = 1, timeout: float | None = None):
     del message_id
     with CdpSession(websocket_url) as session:
-        return session.call(method, params)
+        return session.call(method, params, timeout=timeout)
 
 
 def _legacy_cdp_call(websocket_url: str, method: str, params: dict | None = None,
@@ -293,20 +320,52 @@ def _legacy_cdp_call(websocket_url: str, method: str, params: dict | None = None
                 raise CdpError("WebSocket closed before CDP response")
 
 
-def find_target(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
-    targets = list_targets(port)
-    for target in targets:
-        if target.get("type") == "page" and target.get("url") == url:
-            return target
-    available = [
-        {"title": item.get("title"), "url": item.get("url"), "type": item.get("type")}
+def _page_target_summary(targets: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "type": item.get("type"),
+        }
         for item in targets
         if item.get("type") == "page"
     ]
-    raise CdpError(f"Target not found for {url}. Available page targets: {available}")
 
 
-def evaluate_js(target: dict, expression: str):
+def _assert_quick_search_url(url: str) -> None:
+    if url != QUICK_SEARCH_URL:
+        raise CdpError(
+            "CDP is locked to the Notion quick-search floating window. "
+            f"Refusing target URL {url!r}; expected {QUICK_SEARCH_URL!r}."
+        )
+
+
+def find_target(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
+    _assert_quick_search_url(url)
+    targets = list_targets(port)
+    matches = [
+        target for target in targets
+        if target.get("type") == "page"
+        and target.get("url") == QUICK_SEARCH_URL
+        and target.get("title") != "Notion AI"
+    ]
+    if len(matches) == 1:
+        return matches[0]
+
+    available = _page_target_summary(targets)
+    if not matches:
+        raise CdpError(
+            f"Quick-search CDP target not found for {QUICK_SEARCH_URL}. "
+            f"Ignoring Notion AI and other page targets: {available}"
+        )
+    raise CdpError(
+        f"Expected exactly one quick-search CDP target, found {len(matches)}. "
+        f"Refusing to guess. Page targets: {available}"
+    )
+
+
+def evaluate_js(target: dict, expression: str, timeout: float | None = None):
     result = cdp_call(
         target["webSocketDebuggerUrl"],
         "Runtime.evaluate",
@@ -315,6 +374,7 @@ def evaluate_js(target: dict, expression: str):
             "returnByValue": True,
             "awaitPromise": True,
         },
+        timeout=timeout,
     )
     return result.get("result", {}).get("value")
 
@@ -328,7 +388,7 @@ def textbox_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dic
     const rect = el.getBoundingClientRect();
     return {{
       index,
-      text: el.innerText || el.textContent || "",
+      text: el.textContent || "",
       placeholder: el.getAttribute("placeholder"),
       active: document.activeElement === el,
       visible: rect.width > 0 && rect.height > 0,
@@ -338,7 +398,7 @@ def textbox_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dic
   const submit = [...document.querySelectorAll("button,[role='button']")]
     .map((button, index) => {{
       const rect = button.getBoundingClientRect();
-      const label = button.innerText || button.getAttribute("aria-label") || button.getAttribute("data-testid") || "";
+      const label = button.textContent || button.getAttribute("aria-label") || button.getAttribute("data-testid") || "";
       return {{
         index,
         label,
@@ -351,7 +411,11 @@ def textbox_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dic
   return {{ targetUrl: location.href, textboxes, submit: submit || null }};
 }})()
 """
-    return evaluate_js(target, expression)
+    status = evaluate_js(target, expression)
+    if isinstance(status, dict):
+        status["targetId"] = target.get("id")
+        status["targetTitle"] = target.get("title")
+    return status
 
 
 def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
@@ -360,7 +424,7 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
     expression = f"""
 (() => {{
   const labelFor = (node) => (
-    node.innerText ||
+    node.textContent ||
     node.getAttribute("aria-label") ||
     node.getAttribute("data-testid") ||
     node.getAttribute("title") ||
@@ -383,14 +447,14 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
       const rect = el.getBoundingClientRect();
       return {{
         index,
-        text: el.innerText || el.textContent || "",
+        text: el.textContent || "",
         placeholder: el.getAttribute("placeholder"),
         active: document.activeElement === el,
         visible: rect.width > 0 && rect.height > 0,
         rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
       }};
     }});
-  const bodyText = document.body.innerText || "";
+  const bodyText = document.body.textContent || "";
   const hasStop = buttons.some((button) => (
     !button.disabled && {json.dumps(list(STOP_BUTTON_LABELS))}.includes(button.label)
   ));
@@ -413,7 +477,198 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
   }};
 }})()
 """
-    return evaluate_js(target, expression)
+    status = evaluate_js(target, expression)
+    if isinstance(status, dict):
+        status["targetId"] = target.get("id")
+        status["targetTitle"] = target.get("title")
+    return status
+
+
+def _question_markers(question: str) -> tuple[str, str]:
+    compact = " ".join(question.strip().split())[:120]
+    dense = "".join(compact.split())
+    return compact, dense
+
+
+def wait_for_generation_started_cdp(
+    question: str,
+    port: int = DEFAULT_PORT,
+    url: str = QUICK_SEARCH_URL,
+    timeout: float = 300.0,
+) -> dict:
+    return _wait_for_generation_state_cdp(
+        question,
+        mode="started",
+        port=port,
+        url=url,
+        timeout=timeout,
+    )
+
+
+def wait_for_generation_finished_cdp(
+    question: str,
+    port: int = DEFAULT_PORT,
+    url: str = QUICK_SEARCH_URL,
+    timeout: float = 300.0,
+) -> dict:
+    return _wait_for_generation_state_cdp(
+        question,
+        mode="finished",
+        port=port,
+        url=url,
+        timeout=timeout,
+    )
+
+
+def _wait_for_generation_state_cdp(
+    question: str,
+    mode: str,
+    port: int,
+    url: str,
+    timeout: float,
+) -> dict:
+    if mode not in {"started", "finished"}:
+        raise ValueError(f"unsupported generation wait mode: {mode}")
+
+    target = find_target(port, url)
+    compact_marker, dense_marker = _question_markers(question)
+    expression = f"""
+(() => new Promise((resolve) => {{
+  const timeoutMs = {int(max(timeout, 0.1) * 1000)};
+  const mode = {json.dumps(mode)};
+  const textboxSelector = {json.dumps(TEXTBOX_SELECTOR)};
+  const stopLabels = new Set({json.dumps(list(STOP_BUTTON_LABELS))});
+  const submitLabels = new Set({json.dumps(list(SUBMIT_BUTTON_LABELS))});
+  const copyLabels = new Set({json.dumps(list(COPY_REPLY_LABELS))});
+  const compactMarker = {json.dumps(compact_marker)};
+  const denseMarker = {json.dumps(dense_marker)};
+  const startedAt = Date.now();
+  let sawQuestion = false;
+  let sawStop = false;
+  let settled = false;
+
+  const labelFor = (node) => (
+    node.textContent ||
+    node.getAttribute("aria-label") ||
+    node.getAttribute("data-testid") ||
+    node.getAttribute("title") ||
+    ""
+  ).trim();
+  const compact = (text) => (text || "").replace(/\\s+/g, " ").trim();
+  const dense = (text) => (text || "").replace(/\\s+/g, "");
+  const visible = (node) => {{
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }};
+  const snapshot = () => {{
+    const buttons = [...document.querySelectorAll("button,[role='button']")]
+      .map((button, index) => {{
+        const label = labelFor(button);
+        return {{
+          index,
+          label,
+          disabled: !!button.disabled || button.getAttribute("aria-disabled") === "true",
+          visible: visible(button),
+        }};
+      }})
+      .filter((button) => button.visible);
+    const textboxes = [...document.querySelectorAll(textboxSelector)]
+      .map((el, index) => {{
+        const rect = el.getBoundingClientRect();
+        return {{
+          index,
+          text: el.textContent || "",
+          placeholder: el.getAttribute("placeholder"),
+          active: document.activeElement === el,
+          visible: rect.width > 0 && rect.height > 0,
+        }};
+      }});
+    const bodyText = document.body ? document.body.textContent || "" : "";
+    if (compactMarker) {{
+      const compactBody = compact(bodyText);
+      sawQuestion = sawQuestion ||
+        compactBody.includes(compactMarker) ||
+        (!!denseMarker && dense(bodyText).includes(denseMarker));
+    }}
+    const hasStop = buttons.some((button) => (
+      !button.disabled && stopLabels.has(button.label)
+    ));
+    sawStop = sawStop || hasStop;
+    const hasGeneratingText = /Notion AI\\s+正在生成回复|generating reply|is generating/i.test(bodyText);
+    const enabledSubmit = buttons.find((button) => (
+      !button.disabled && submitLabels.has(button.label)
+    )) || null;
+    const copyReplies = buttons.filter((button) => (
+      !button.disabled && copyLabels.has(button.label)
+    ));
+    const visibleTextbox = textboxes.find((textbox) => textbox.visible) || null;
+    return {{
+      targetUrl: location.href,
+      mode,
+      elapsedMs: Date.now() - startedAt,
+      textboxes,
+      hasStop,
+      hasGeneratingText,
+      enabledSubmit,
+      copyReplyCount: copyReplies.length,
+      sawQuestion,
+      sawStop,
+      visibleTextboxText: visibleTextbox ? visibleTextbox.text : "",
+      bodyTextTail: bodyText.slice(-6000),
+    }};
+  }};
+  const done = (success, state, error) => {{
+    if (settled) return;
+    settled = true;
+    observer.disconnect();
+    clearInterval(intervalId);
+    clearTimeout(timeoutId);
+    resolve({{ success, state, error: error || null }});
+  }};
+  const check = () => {{
+    const state = snapshot();
+    if (
+      mode === "started" &&
+      (state.hasStop || (state.sawQuestion && !state.visibleTextboxText))
+    ) {{
+      done(true, state, null);
+      return;
+    }}
+    if (
+      mode === "finished" &&
+      state.sawQuestion &&
+      !state.hasStop &&
+      !state.hasGeneratingText &&
+      state.copyReplyCount > 0 &&
+      (state.sawStop || !state.enabledSubmit)
+    ) {{
+      done(true, state, null);
+    }}
+  }};
+
+  const observer = new MutationObserver(check);
+  observer.observe(document.body || document.documentElement, {{
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["aria-label", "aria-disabled", "disabled", "data-testid"],
+  }});
+  const intervalId = setInterval(check, 500);
+  const timeoutId = setTimeout(() => {{
+    done(false, snapshot(), `等待 CDP 生成${{mode === "started" ? "开始" : "完成"}}超时 (${{timeoutMs / 1000}}s)`);
+  }}, timeoutMs);
+  check();
+}}))()
+"""
+    result = evaluate_js(target, expression, timeout=timeout + 3.0)
+    if isinstance(result, dict):
+        state = result.get("state")
+        if isinstance(state, dict):
+            state["targetId"] = target.get("id")
+            state["targetTitle"] = target.get("title")
+        return result
+    return {"success": False, "state": None, "error": "CDP generation wait returned no result"}
 
 
 def _has_visible_textbox(status: dict) -> bool:
@@ -426,6 +681,7 @@ def wait_for_textbox(
     timeout: float = DEFAULT_WAIT_TEXTBOX_TIMEOUT,
     interval: float = DEFAULT_WAIT_TEXTBOX_INTERVAL,
 ) -> dict:
+    _assert_quick_search_url(url)
     deadline = time.monotonic() + max(timeout, 0)
     last_error: Exception | None = None
 
@@ -488,7 +744,7 @@ def write_text(text: str, port: int = DEFAULT_PORT,
   const submit = [...document.querySelectorAll("button,[role='button']")]
     .map((button, index) => {{
       const rect = button.getBoundingClientRect();
-      const label = button.innerText || button.getAttribute("aria-label") || button.getAttribute("data-testid") || "";
+      const label = button.textContent || button.getAttribute("aria-label") || button.getAttribute("data-testid") || "";
       return {{
         index,
         label,
@@ -501,7 +757,7 @@ def write_text(text: str, port: int = DEFAULT_PORT,
   return {{
     ok: true,
     execOk,
-    text: el.innerText || el.textContent || "",
+    text: el.textContent || "",
     active: document.activeElement === el,
     submit: submit || null,
   }};
@@ -537,7 +793,122 @@ def clear_text(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
     }}));
   }}
   el.dispatchEvent(new Event("change", {{ bubbles: true }}));
-  return {{ ok: true, execOk, text: el.innerText || el.textContent || "" }};
+  return {{ ok: true, execOk, text: el.textContent || "" }};
+}})()
+"""
+    return evaluate_js(target, expression)
+
+
+def set_text_and_submit(text: str, port: int = DEFAULT_PORT,
+                        url: str = QUICK_SEARCH_URL) -> dict:
+    target = find_target(port, url)
+    expression = f"""
+(() => {{
+  const textboxSelector = {json.dumps(TEXTBOX_SELECTOR)};
+  const submitLabels = new Set({json.dumps(list(SUBMIT_BUTTON_LABELS))});
+  const labelFor = (node) => (
+    node.textContent ||
+    node.getAttribute("aria-label") ||
+    node.getAttribute("data-testid") ||
+    node.getAttribute("title") ||
+    ""
+  ).trim();
+  const visible = (node) => {{
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }};
+  const setSelection = (el) => {{
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }};
+
+  const el = document.querySelector(textboxSelector);
+  if (!el) return {{ ok: false, error: "textbox not found" }};
+
+  el.focus();
+  setSelection(el);
+  let clearOk = false;
+  try {{
+    clearOk = document.execCommand("delete");
+  }} catch (error) {{
+    clearOk = false;
+  }}
+  if (!clearOk) {{
+    el.textContent = "";
+    el.dispatchEvent(new InputEvent("input", {{
+      bubbles: true,
+      inputType: "deleteContentBackward",
+    }}));
+  }}
+
+  setSelection(el);
+  let insertOk = false;
+  try {{
+    insertOk = document.execCommand("insertText", false, {json.dumps(text)});
+  }} catch (error) {{
+    insertOk = false;
+  }}
+  if (!insertOk) {{
+    el.textContent = {json.dumps(text)};
+    el.dispatchEvent(new InputEvent("beforeinput", {{
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: {json.dumps(text)},
+    }}));
+    el.dispatchEvent(new InputEvent("input", {{
+      bubbles: true,
+      inputType: "insertText",
+      data: {json.dumps(text)},
+    }}));
+  }}
+  el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+
+  const candidates = [...document.querySelectorAll("button,[role='button']")]
+    .map((button, index) => {{
+      const rect = button.getBoundingClientRect();
+      return {{
+        node: button,
+        index,
+        label: labelFor(button),
+        disabled: !!button.disabled || button.getAttribute("aria-disabled") === "true",
+        visible: rect.width > 0 && rect.height > 0,
+        rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
+      }};
+    }});
+  const matches = candidates
+    .filter((item) => item.visible && !item.disabled && submitLabels.has(item.label))
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x));
+  if (!matches.length) {{
+    return {{
+      ok: false,
+      error: "submit button not found or disabled",
+      clearOk,
+      insertOk,
+      text: el.textContent || "",
+      buttons: candidates
+        .filter((item) => item.visible && item.label)
+        .map(({{node, ...item}}) => item),
+    }};
+  }}
+
+  const selected = matches[0];
+  selected.node.click();
+  return {{
+    ok: true,
+    clearOk,
+    insertOk,
+    text: el.textContent || "",
+    active: document.activeElement === el,
+    submitted: {{
+      index: selected.index,
+      label: selected.label,
+      rect: selected.rect,
+    }},
+  }};
 }})()
 """
     return evaluate_js(target, expression)
@@ -571,7 +942,7 @@ def _attachment_click_points(session: CdpSession) -> dict:
         "expression": """
 (() => {
   const labelFor = (node) => (
-    node.innerText ||
+    node.textContent ||
     node.getAttribute("aria-label") ||
     node.getAttribute("data-testid") ||
     node.getAttribute("title") ||
@@ -594,7 +965,7 @@ def _attachment_click_points(session: CdpSession) -> dict:
   const plus = buttons.find((item) => (
     item.visible && item.label === "提供背景信息"
   ));
-  const menuItems = [...document.querySelectorAll("*")].map(describe);
+  const menuItems = [...document.querySelectorAll("button,[role='button'],[role='menuitem']")].map(describe);
   const upload = menuItems.find((item) => (
     item.visible &&
     item.role === "menuitem" &&
@@ -741,7 +1112,7 @@ def attachment_status(file_paths: list[str], port: int = DEFAULT_PORT,
   const removePrefixes = {json.dumps(list(ATTACHMENT_REMOVE_PREFIXES))};
   const allowUploadLabels = {json.dumps(list(ALLOW_UPLOAD_LABELS))};
   const labelFor = (node) => (
-    node.innerText ||
+    node.textContent ||
     node.getAttribute("aria-label") ||
     node.getAttribute("data-testid") ||
     node.getAttribute("title") ||
@@ -751,7 +1122,7 @@ def attachment_status(file_paths: list[str], port: int = DEFAULT_PORT,
     const rect = node.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }};
-  const nodes = [...document.querySelectorAll("*")];
+  const nodes = [...document.querySelectorAll("button,[role='button'],[role='menuitem']")];
   const labels = nodes.map((node, index) => {{
     const rect = node.getBoundingClientRect();
     return {{
@@ -765,14 +1136,16 @@ def attachment_status(file_paths: list[str], port: int = DEFAULT_PORT,
   }});
   const removeButtons = labels.filter((item) => (
     item.visible &&
-    item.role === "button" &&
+    (item.role === "button" || item.tag === "BUTTON") &&
     removePrefixes.some((prefix) => item.label.startsWith(prefix))
   ));
   const seen = filenames.filter((filename) => (
     removeButtons.some((button) => button.label.includes(filename))
   ));
   const allowUpload = labels.find((item) => (
-    item.visible && item.role === "button" && allowUploadLabels.includes(item.label)
+    item.visible &&
+    (item.role === "button" || item.tag === "BUTTON") &&
+    allowUploadLabels.includes(item.label)
   )) || null;
   const fileInput = document.querySelector("input[type=file]");
   return {{
@@ -785,7 +1158,7 @@ def attachment_status(file_paths: list[str], port: int = DEFAULT_PORT,
       fileCount: fileInput.files ? fileInput.files.length : null,
       names: fileInput.files ? [...fileInput.files].map((file) => file.name) : [],
     }} : null,
-    bodyTextTail: (document.body.innerText || "").slice(-2000),
+    bodyTextTail: (document.body.textContent || "").slice(-2000),
   }};
 }})()
 """
@@ -844,7 +1217,7 @@ def click_button_by_label(
     .map((button, index) => {{
       const rect = button.getBoundingClientRect();
       const label = (
-        button.innerText ||
+        button.textContent ||
         button.getAttribute("aria-label") ||
         button.getAttribute("data-testid") ||
         button.getAttribute("title") ||
@@ -915,45 +1288,64 @@ def wait_for_cdp_ready(port: int = DEFAULT_PORT,
     return wait_for_textbox(port, url, timeout, interval)
 
 
-def _run_cua_driver(args: dict) -> dict:
-    command = ["cua-driver", args.pop("_tool"), json.dumps(args)]
+def _notion_pids() -> list[int]:
     completed = subprocess.run(
-        command,
-        check=True,
+        ["pgrep", "-x", "Notion"],
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return json.loads(completed.stdout)
+    return [
+        int(line)
+        for line in completed.stdout.splitlines()
+        if line.strip().isdigit()
+    ]
+
+
+def _wait_for_pids_to_exit(pids: list[int], timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        for pid in list(remaining):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                remaining.discard(pid)
+        if remaining:
+            time.sleep(0.1)
+    return not remaining
 
 
 def restart_notion_with_cdp(port: int = DEFAULT_PORT, settle: float = 2.0) -> dict:
-    launched = _run_cua_driver({"_tool": "launch_app", "bundle_id": NOTION_BUNDLE_ID})
-    pid = launched.get("pid")
-    if pid:
-        subprocess.run(
-            ["cua-driver", "hotkey", json.dumps({"pid": pid, "keys": ["cmd", "q"]})],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+    if not NOTION_EXECUTABLE.exists():
+        raise CdpError(f"Notion executable not found: {NOTION_EXECUTABLE}")
+
+    old_pids = _notion_pids()
+    for pid in old_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if old_pids and not _wait_for_pids_to_exit(old_pids, timeout=8.0):
+        remaining = _notion_pids()
+        raise CdpError(f"Timed out waiting for Notion to quit: pids={remaining}")
+    if old_pids:
         time.sleep(settle)
-    return _run_cua_driver({
-        "_tool": "launch_app",
-        "bundle_id": NOTION_BUNDLE_ID,
-        "electron_debugging_port": port,
-    })
 
-
-def open_ai_window(pid: int) -> None:
-    subprocess.run(
-        ["cua-driver", "hotkey", json.dumps({"pid": pid, "keys": ["cmd", "shift", "j"]})],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    process = subprocess.Popen(
+        [str(NOTION_EXECUTABLE), f"--remote-debugging-port={port}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
+    return {
+        "pid": process.pid,
+        "bundle_id": NOTION_BUNDLE_ID,
+        "port": port,
+        "method": "direct_executable",
+        "executable": str(NOTION_EXECUTABLE),
+    }
 
 
 def print_json(payload) -> None:
@@ -962,20 +1354,19 @@ def print_json(payload) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Beta CDP input tester for the Notion AI quick-search window."
+        description="CDP input tester for the Notion AI quick-search window."
     )
     parser.add_argument("text", nargs="?", help="Text to write into Notion AI.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--url", default=QUICK_SEARCH_URL,
-                        choices=[QUICK_SEARCH_URL, AI_URL])
+                        choices=[QUICK_SEARCH_URL],
+                        help="CDP target URL. Locked to the quick-search floating window.")
     parser.add_argument("--restart-with-cdp", action="store_true",
                         help="Quit Notion and relaunch it with the CDP port.")
-    parser.add_argument("--open-ai", action="store_true",
-                        help="Send Cmd+Shift+J to Notion after launch.")
     parser.add_argument("--status", action="store_true",
                         help="Print target/input status only.")
     parser.add_argument("--clear", action="store_true",
-                        help="Clear the beta target textbox.")
+                        help="Clear the CDP target textbox.")
     parser.add_argument("--wait-textbox-timeout", type=float,
                         default=DEFAULT_WAIT_TEXTBOX_TIMEOUT,
                         help="Seconds to wait for the quick-search textbox.")
@@ -988,13 +1379,11 @@ def main() -> int:
         launch_info = None
         if args.restart_with_cdp:
             launch_info = restart_notion_with_cdp(args.port)
-            if args.open_ai and launch_info.get("pid"):
-                open_ai_window(int(launch_info["pid"]))
-                time.sleep(0.8)
+            wait_for_cdp_server(args.port)
         elif not cdp_is_running(args.port):
             raise CdpError(
                 f"CDP is not running on port {args.port}. "
-                "Use --restart-with-cdp to relaunch Notion for beta testing."
+                "Use --restart-with-cdp to relaunch Notion with CDP enabled."
             )
 
         wait_status = None
@@ -1014,14 +1403,16 @@ def main() -> int:
         }
         if args.clear:
             result["clear"] = clear_text(args.port, args.url)
-        if args.status or not args.text:
-            result["status"] = wait_status or textbox_status(args.port, args.url)
         if args.text:
             result["write"] = write_text(args.text, args.port, args.url)
             result["status"] = textbox_status(args.port, args.url)
+        elif args.clear:
+            result["status"] = textbox_status(args.port, args.url)
+        elif args.status:
+            result["status"] = wait_status or textbox_status(args.port, args.url)
         print_json(result)
         return 0
-    except (CdpError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (CdpError, subprocess.CalledProcessError, json.JSONDecodeError, OSError) as exc:
         print_json({"success": False, "error": str(exc)})
         return 1
 

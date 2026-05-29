@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""CDP-backed Notion AI ask flow.
-
-This is the background-control beta path. It drives only the Notion renderer
-DOM through Electron CDP after Notion has been started with
---remote-debugging-port=9222.
-"""
+"""CDP-backed Notion AI ask flow."""
 
 from __future__ import annotations
 
@@ -21,17 +16,18 @@ from .beta_cdp_input import (
     DEFAULT_WAIT_TEXTBOX_INTERVAL,
     DEFAULT_WAIT_TEXTBOX_TIMEOUT,
     QUICK_SEARCH_URL,
-    clear_text,
+    cdp_is_running,
     copy_reply,
     dom_status,
-    open_ai_window,
     restart_notion_with_cdp,
     set_file_input_files,
+    set_text_and_submit,
     start_new_conversation_cdp,
-    submit_message,
+    wait_for_attachments_ready_cdp,
+    wait_for_cdp_server,
     wait_for_cdp_ready,
-    write_text,
-    _run_cua_driver,
+    wait_for_generation_finished_cdp as wait_for_generation_finished_observer,
+    wait_for_generation_started_cdp as wait_for_generation_started_observer,
 )
 from .notion_ax import get_clipboard_text, set_clipboard_text
 
@@ -50,8 +46,14 @@ def _body_contains_question(status: dict, question: str) -> bool:
     marker = _question_marker(question)
     if not marker:
         return False
-    body = " ".join((status.get("bodyTextTail") or "").split())
-    return marker in body
+    body = status.get("bodyTextTail") or ""
+    compact_body = " ".join(body.split())
+    if marker in compact_body:
+        return True
+
+    dense_marker = "".join(marker.split())
+    dense_body = "".join(body.split())
+    return bool(dense_marker and dense_marker in dense_body)
 
 
 def _visible_textbox_text(status: dict) -> str:
@@ -130,30 +132,13 @@ def wait_for_attachments_in_context_cdp(file_paths: list[str],
     }
 
 
-def launch_or_open_ai(port: int = DEFAULT_PORT, restart: bool = False) -> dict:
-    if restart:
-        launch_info = restart_notion_with_cdp(port)
-    else:
-        launch_info = _run_cua_driver({
-            "_tool": "launch_app",
-            "bundle_id": "notion.id",
-            "electron_debugging_port": port,
-        })
-    if launch_info.get("pid"):
-        open_ai_window(int(launch_info["pid"]))
-    time.sleep(0.8)
-    return launch_info
-
-
-def ensure_cdp_ai_ready(port: int, auto_open: bool, restart: bool,
+def ensure_cdp_ai_ready(port: int, auto_restart: bool, restart: bool,
                         timeout: float, interval: float) -> dict:
-    try:
-        return wait_for_cdp_ready(port, QUICK_SEARCH_URL, timeout, interval)
-    except CdpError:
-        if not auto_open and not restart:
-            raise
+    launch_info = None
+    if restart or (auto_restart and not cdp_is_running(port)):
+        launch_info = restart_notion_with_cdp(port)
+        wait_for_cdp_server(port)
 
-    launch_info = launch_or_open_ai(port, restart=restart)
     status = wait_for_cdp_ready(port, QUICK_SEARCH_URL, timeout, interval)
     return {"launch_info": launch_info, "status": status}
 
@@ -161,6 +146,26 @@ def ensure_cdp_ai_ready(port: int, auto_open: bool, restart: bool,
 def wait_until_generation_started_cdp(question: str, timeout: float,
                                       quiet: bool = False,
                                       port: int = DEFAULT_PORT) -> dict:
+    _print("  CDP 状态: 等待生成开始（页面内 MutationObserver）", quiet)
+    try:
+        return wait_for_generation_started_observer(
+            question,
+            port=port,
+            timeout=timeout,
+        )
+    except CdpError as exc:
+        _print(f"  MutationObserver 等待失败，回退轮询: {exc}", quiet)
+        return wait_until_generation_started_polling_cdp(
+            question,
+            timeout=timeout,
+            quiet=quiet,
+            port=port,
+        )
+
+
+def wait_until_generation_started_polling_cdp(question: str, timeout: float,
+                                              quiet: bool = False,
+                                              port: int = DEFAULT_PORT) -> dict:
     deadline = time.time() + timeout
     last_key = None
     saw_question = False
@@ -205,6 +210,26 @@ def wait_until_generation_started_cdp(question: str, timeout: float,
 def wait_until_generation_finished_cdp(question: str, timeout: float,
                                        quiet: bool = False,
                                        port: int = DEFAULT_PORT) -> dict:
+    _print("  CDP 状态: 等待生成完成（页面内 MutationObserver）", quiet)
+    try:
+        return wait_for_generation_finished_observer(
+            question,
+            port=port,
+            timeout=timeout,
+        )
+    except CdpError as exc:
+        _print(f"  MutationObserver 等待失败，回退轮询: {exc}", quiet)
+        return wait_until_generation_finished_polling_cdp(
+            question,
+            timeout=timeout,
+            quiet=quiet,
+            port=port,
+        )
+
+
+def wait_until_generation_finished_polling_cdp(question: str, timeout: float,
+                                               quiet: bool = False,
+                                               port: int = DEFAULT_PORT) -> dict:
     deadline = time.time() + timeout
     last_key = None
     saw_question = False
@@ -295,7 +320,7 @@ def ask_and_copy_reply_cdp(question: str,
                            attach_files: list[str] | None = None,
                            quiet: bool = False,
                            port: int = DEFAULT_PORT,
-                           auto_open: bool = True,
+                           auto_restart: bool = True,
                            restart_with_cdp: bool = False) -> dict:
     started_at = time.time()
 
@@ -303,7 +328,7 @@ def ask_and_copy_reply_cdp(question: str,
         _print("===== CDP 后台提问 =====", quiet)
         ready = ensure_cdp_ai_ready(
             port,
-            auto_open=auto_open,
+            auto_restart=auto_restart,
             restart=restart_with_cdp,
             timeout=DEFAULT_WAIT_TEXTBOX_TIMEOUT,
             interval=DEFAULT_WAIT_TEXTBOX_INTERVAL,
@@ -321,7 +346,7 @@ def ask_and_copy_reply_cdp(question: str,
                     "error": clicked.get("error"),
                     "details": clicked,
                 }
-            time.sleep(0.5)
+            wait_for_cdp_ready(port, QUICK_SEARCH_URL)
 
         if attach_files:
             _print("2. CDP 上传附件到上下文", quiet)
@@ -334,11 +359,10 @@ def ask_and_copy_reply_cdp(question: str,
                     "error": attached.get("error"),
                     "details": attached,
                 }
-            context_ready = wait_for_attachments_in_context_cdp(
+            context_ready = wait_for_attachments_ready_cdp(
                 attached["files"],
-                timeout=120.0,
-                quiet=quiet,
                 port=port,
+                timeout=120.0,
             )
             if not context_ready["success"]:
                 return {
@@ -347,42 +371,23 @@ def ask_and_copy_reply_cdp(question: str,
                     "step": "wait_attachments",
                     "error": context_ready["error"],
                     "files": context_ready.get("files", []),
-                    "final_state": context_ready.get("state"),
+                    "final_state": context_ready.get("state") or context_ready.get("status"),
                 }
 
-        _print("3. CDP 写入问题", quiet)
+        _print("3. CDP 写入并提交问题", quiet)
         wait_for_cdp_ready(port, QUICK_SEARCH_URL)
-        cleared = clear_text(port, QUICK_SEARCH_URL)
-        if not cleared.get("ok"):
-            return {
-                "success": False,
-                "text": "",
-                "step": "clear_input",
-                "error": cleared.get("error"),
-            }
-        typed = write_text(question, port, QUICK_SEARCH_URL)
-        if not typed.get("ok"):
-            return {
-                "success": False,
-                "text": "",
-                "step": "input",
-                "error": typed.get("error"),
-                "details": typed,
-            }
-
-        _print("4. CDP 提交问题", quiet)
-        submitted = submit_message(port, QUICK_SEARCH_URL)
+        submitted = set_text_and_submit(question, port, QUICK_SEARCH_URL)
         if not submitted.get("ok"):
             return {
                 "success": False,
                 "text": "",
-                "step": "submit",
+                "step": "input_submit",
                 "error": submitted.get("error"),
                 "details": submitted,
             }
 
         if assign_task:
-            _print("5. 等待 CDP 生成开始", quiet)
+            _print("4. 等待 CDP 生成开始", quiet)
             started = wait_until_generation_started_cdp(
                 question,
                 timeout=timeout,
@@ -408,7 +413,7 @@ def ask_and_copy_reply_cdp(question: str,
                 "error": None,
             }
 
-        _print("5. 等待 CDP 生成完成", quiet)
+        _print("4. 等待 CDP 生成完成", quiet)
         finished = wait_until_generation_finished_cdp(
             question,
             timeout=timeout,
@@ -424,7 +429,7 @@ def ask_and_copy_reply_cdp(question: str,
                 "final_state": finished.get("state"),
             }
 
-        _print("6. CDP 拷贝最新回复", quiet)
+        _print("5. CDP 拷贝最新回复", quiet)
         copied = copy_latest_reply_cdp(timeout=10.0, quiet=quiet, port=port)
         if not copied["success"]:
             return {
@@ -443,7 +448,7 @@ def ask_and_copy_reply_cdp(question: str,
             "launch_info": launch_info,
             "error": None,
         }
-    except (CdpError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (CdpError, subprocess.CalledProcessError, json.JSONDecodeError, OSError) as exc:
         return {"success": False, "text": "", "step": "cdp", "error": str(exc)}
 
 
@@ -463,8 +468,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="通过 CDP file input 上传附件，可重复传入多个文件",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--no-auto-restart", action="store_true",
+                        help="CDP 端口不可用时不自动重启 Notion")
     parser.add_argument("--no-auto-open", action="store_true",
-                        help="找不到 quick-search 输入框时不尝试打开 Notion AI")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--restart-with-cdp", action="store_true",
                         help="需要时重启 Notion 并带 CDP 端口启动")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
@@ -502,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
         attach_files=args.attach_files,
         quiet=args.quiet or args.json,
         port=args.port,
-        auto_open=not args.no_auto_open,
+        auto_restart=not (args.no_auto_restart or args.no_auto_open),
         restart_with_cdp=args.restart_with_cdp,
     )
 

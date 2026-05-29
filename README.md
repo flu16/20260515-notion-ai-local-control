@@ -1,6 +1,6 @@
 # Notion AI Local Control
 
-用 macOS Accessibility API 控制 Notion 桌面端的 Notion AI 浮动窗口。正式入口是统一 CLI：
+用 Electron CDP 控制 Notion 桌面端的 Notion AI quick-search 浮动窗口。正式入口是统一 CLI：
 
 ```bash
 ./venv/bin/notion-ai ask "1+1" --json
@@ -28,6 +28,11 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask "1+1" --json
 NOTION_AI_AGENT_EOF
 ```
 
+`notion-ai ask` 默认使用 CDP，只操作 `https://www.notion.so/quick-search` target。
+如果 `127.0.0.1:9222` 不可用，它会尝试重启 Notion 并带
+`--remote-debugging-port=9222` 启动；如果 quick-search 浮层没有出现，会返回明确错误，
+不会自动回退到 AX 路线。
+
 发布任务后只等待 AI 开始生成：
 
 ```bash
@@ -44,11 +49,13 @@ NOTION_AI_AGENT_EOF
 ./venv/bin/notion-ai input --read
 ./venv/bin/notion-ai model --current
 ./venv/bin/notion-ai open --check
+./venv/bin/notion-ai ask-ax "1+1" --json
 ```
 
 ## 能力边界
 
 - `--attach-file` 支持 Notion AI 当前可上传的文件类型：图片、PDF、CSV、Markdown、纯文本。
+- 主流 CDP 路线不依赖 CuaDriver；旧 AX 路线保留在 `notion-ai ask-ax` 供调试和人工回退。
 - 图片按常见扩展名识别：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`、`.heif`。
 - Markdown / 纯文本按扩展名识别：`.md`、`.markdown`、`.txt`。
 - 其他文件会在粘贴到 Notion AI 之前被拦截，并返回明确错误。
@@ -69,10 +76,12 @@ NOTION_AI_AGENT_EOF
 ```text
 CLI
   cli.py                         # notion-ai 统一入口
-  ask_and_copy_reply.py          # ask 参数解析与输出格式
+  ask_cdp.py                     # 默认 ask/ask-cdp 的 CDP 提问流程
+  ask_and_copy_reply.py          # ask-ax legacy 参数解析与输出格式
 
 Ask workflow
-  ask_flow.py                    # 主提问流程编排
+  beta_cdp_input.py              # CDP target、DOM 输入、提交、附件与复制底层能力
+  ask_flow.py                    # legacy AX 主提问流程编排
   conversation_actions.py        # 窗口、扫描、按钮动作
   generation_wait.py             # 生成完成与贴底等待
   reply_copy.py                  # 复制最新回复
@@ -107,6 +116,8 @@ Tools
 ./venv/bin/python -m compileall -q src
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai ask --help
+./venv/bin/notion-ai ask-cdp --help
+./venv/bin/notion-ai ask-ax --help
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask --help
 ```
 

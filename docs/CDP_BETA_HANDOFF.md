@@ -1,9 +1,9 @@
-# CDP Beta Handoff
+# CDP Main Path
 
-本文档用于在新对话中继续研究 Notion AI 的 CDP 后台控制路线。
+本文档说明 Notion AI 的 CDP 后台控制主路线。
 
 当前目标不是调用 Notion 私有网络接口，而是只通过 Electron CDP 操作
-Notion 桌面端 renderer 里的 DOM/editor 输入框，替代剪贴板和前台焦点输入。
+Notion 桌面端 renderer 里的 DOM/editor 输入框，替代前台焦点输入；回复复制仍读取系统剪贴板。
 
 ## 当前结论
 
@@ -29,7 +29,7 @@ document.execCommand("insertText", false, text)
 
 可以在窗口不在前台时写入 Notion AI 输入框。
 
-- 写入后 AX / Cua 验证能看到：
+- 写入后可通过 AX 或截图验证看到：
 
 ```text
 AXTextArea = "..."
@@ -40,7 +40,7 @@ Submit AI message
 
 重要观察：
 
-- `--restart-with-cdp --open-ai` 后，`quick-search` target 可能先出现但 DOM 尚未渲染输入框。
+- `--restart-with-cdp` 后，`quick-search` target 可能先出现但 DOM 尚未渲染输入框。
 - 需要等待 textbox 出现后再写入，否则会得到 `textbox not found`。
 - 生成中 `拷贝回复` 按钮会消失，生成完成后才出现，可作为完成信号之一。
 - 已验证完整后台链路：
@@ -55,7 +55,7 @@ Submit AI message
 - 关闭/重置会话
 - 文件附件
 
-## 已新增 beta 文件
+## CDP 主路径文件
 
 文件：
 
@@ -67,8 +67,10 @@ src/notion_ai_local_control/ask_cdp.py
 统一 CLI 已挂载：
 
 ```text
+notion-ai ask
 notion-ai beta-cdp-input
 notion-ai ask-cdp
+notion-ai ask-ax
 ```
 
 该文件包含：
@@ -85,15 +87,15 @@ notion-ai ask-cdp
 - 读取剪贴板作为最终回复
 - CDP `Input.dispatchMouseEvent` 打开附件菜单
 - CDP `Page.fileChooserOpened` 拦截文件选择器并通过 `DOM.setFileInputFiles` 注入文件
-- 可选重启 Notion 并打开 CDP
+- 可选重启 Notion 并打开 CDP；主流路径不依赖 CuaDriver
 
 默认行为：
 
-- 不会自动重启 Notion。
-- 推荐测试阶段让 Notion 一直带 `--remote-debugging-port=9222` 运行，
-  后续命令直接复用这个 CDP 端口。
-- 如果 `9222` 没开，只提示使用 `--restart-with-cdp`。
-- 只有显式传入 `--restart-with-cdp` 才会退出并带 CDP 端口重启 Notion。
+- `notion-ai ask` 默认使用 CDP，`ask-cdp` 是兼容别名。
+- 如果 `9222` 没开，`notion-ai ask` 默认会重启 Notion 并带
+  `--remote-debugging-port=9222` 启动。
+- 如果 quick-search 浮层没有出现，命令会失败并提示打开浮层，不会自动回退 AX。
+- `notion-ai ask-ax` 保留旧 AX/剪贴板流程，供人工调试或回退。
 - 写入、清空、查询状态前会默认等待 quick-search textbox 可见，避免
   target 已出现但 DOM 尚未渲染导致 `textbox not found`。
 
@@ -106,11 +108,11 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.beta_cdp_input --hel
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli beta-cdp-input --help
 ```
 
-带 CDP 重启 Notion，并打开 Notion AI quick-search：
+带 CDP 重启 Notion：
 
 ```bash
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.beta_cdp_input \
-  --restart-with-cdp --open-ai \
+  --restart-with-cdp \
   "background CDP input test"
 ```
 
@@ -164,26 +166,26 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.beta_cdp_input --cle
 完整 CDP 后台提问并复制回复：
 
 ```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask-cdp \
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask \
   "请只回复：CDP OK" --json
 ```
 
 从 stdin 输入，适合自动化长文本：
 
 ```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask-cdp \
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask \
   --from-stdin --json <<'EOF'
 总结这段文本。
 EOF
 ```
 
-当前 `ask-cdp` 链路：
+当前 `ask` / `ask-cdp` 链路：
 
 ```text
 后台写入 -> CDP 点击提交 -> 等待拷贝回复出现 -> CDP 点击最新拷贝回复 -> 读取剪贴板
 ```
 
-带附件时 `ask-cdp` 使用两阶段纯 CDP 流程：
+带附件时 `ask` / `ask-cdp` 使用两阶段纯 CDP 流程：
 
 ```text
 CDP 打开附件菜单 -> 拦截 file chooser -> 注入文件 -> 等附件进入对话上下文
@@ -191,16 +193,15 @@ CDP 打开附件菜单 -> 拦截 file chooser -> 注入文件 -> 等附件进入
 ```
 
 注意：quick-search 的文件选择器上传会把附件先作为一条上下文消息发出。
-因此 `ask-cdp --attach-file` 会先等附件消息进入上下文，再发送用户问题。
+因此 `ask --attach-file` 会先等附件消息进入上下文，再发送用户问题。
 
 当前限制：
 
 - 附件目前通过 quick-search target 验证；`https://www.notion.so/ai` target
   没有同样的 file input/menu 结构。
-- 需要 Notion 已经带 `--remote-debugging-port=9222` 运行；如果没有 quick-search
-  输入框，`ask-cdp` 默认会尝试通过 Cua 发一次 Cmd+Shift+J 打开。
-- `--restart-with-cdp` 可用于重启 Notion 并带 CDP 端口启动，但日常测试推荐
-  只启动一次并长期保持 9222。
+- 主流路径只操作 `https://www.notion.so/quick-search`。
+- 如果 quick-search 输入框不存在，命令会失败并提示打开浮层；不会通过 CuaDriver
+  或系统热键自动打开。
 
 确认 CDP 是否开启：
 
@@ -212,11 +213,8 @@ curl -fsS http://127.0.0.1:9222/json/list
 恢复普通 Notion：
 
 ```bash
-cua-driver launch_app '{"bundle_id":"notion.id"}'
-# 记下 pid，然后：
-cua-driver hotkey '{"pid":PID,"keys":["cmd","q"]}'
-sleep 2
-cua-driver launch_app '{"bundle_id":"notion.id"}'
+pkill -x Notion
+/Applications/Notion.app/Contents/MacOS/Notion >/dev/null 2>&1 &
 curl -fsS http://127.0.0.1:9222/json/version || true
 ```
 
@@ -229,7 +227,7 @@ curl -fsS http://127.0.0.1:9222/json/version || true
 流程：
 
 1. 前台应用为 Codex。
-2. 用 beta 命令带 CDP 重启 Notion 并打开 quick-search。
+2. 用调试命令带 CDP 重启 Notion；如果 quick-search 没有恢复，手动打开浮层。
 3. 第一次写入过早失败，返回 `textbox not found`。
 4. 等待 quick-search DOM 渲染后，`--status` 显示 textbox 存在。
 5. 前台仍为 Codex。
@@ -347,7 +345,7 @@ submit?.click()
 验证结果：
 
 ```text
-ask-cdp --attach-file /tmp/notion-cdp-official-1779939924.txt \
+ask --attach-file /tmp/notion-cdp-official-1779939924.txt \
   "请读取最新上传的附件，只回复附件第二行原文。"
 
 返回：official second line 1779939924
@@ -380,4 +378,5 @@ src/notion_ai_local_control/input_box.py
 src/notion_ai_local_control/reply_copy.py
 ```
 
-CDP 路径已作为独立 `ask-cdp` 保留，不直接混入稳定 ask 流程。
+CDP 路径已成为默认 `ask` 流程；`ask-cdp` 作为兼容别名保留，旧稳定 AX 流程在
+`ask-ax` 中保留。

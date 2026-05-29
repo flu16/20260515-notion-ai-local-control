@@ -9,14 +9,19 @@ from collections.abc import Callable
 
 COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
     "ask": (
-        "notion_ai_local_control.ask_and_copy_reply",
+        "notion_ai_local_control.ask_cdp",
         "main",
-        "Ask Notion AI and copy the final reply.",
+        "Ask Notion AI through Electron CDP and copy the final reply.",
     ),
     "ask-cdp": (
         "notion_ai_local_control.ask_cdp",
         "main",
-        "Beta: ask Notion AI through Electron CDP and copy the reply.",
+        "Alias for ask: use Electron CDP and copy the final reply.",
+    ),
+    "ask-ax": (
+        "notion_ai_local_control.ask_and_copy_reply",
+        "main",
+        "Legacy: ask Notion AI through macOS Accessibility.",
     ),
     "state": (
         "notion_ai_local_control.check_ai_state",
@@ -69,7 +74,7 @@ DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
     "beta-cdp-input": (
         "notion_ai_local_control.beta_cdp_input",
         "main",
-        "Beta: write to Notion AI via Electron CDP DOM events.",
+        "Debug: read/write the Notion AI quick-search textbox through CDP.",
     ),
 }
 
@@ -85,6 +90,7 @@ def print_help() -> None:
     print("常用示例:")
     print('  notion-ai ask "1+1" --json')
     print('  notion-ai ask-cdp "1+1" --json')
+    print('  notion-ai ask-ax "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
     print("  notion-ai state --json")
     print("  notion-ai open --check")
@@ -121,7 +127,7 @@ def _run_argv_main(command: str, argv: list[str]) -> int:
 
     old_argv = sys.argv[:]
     sys.argv = [f"notion-ai {command}", *argv]
-    if command == "ask":
+    if command in ("ask", "ask-ax"):
         try:
             result = target(argv)
             return int(result or 0)
