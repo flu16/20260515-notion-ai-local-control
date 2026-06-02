@@ -18,59 +18,9 @@ COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Alias for ask: use Electron CDP and copy the final reply.",
     ),
-    "ask-ax": (
-        "notion_ai_local_control.ask_and_copy_reply",
-        "main",
-        "Legacy: ask Notion AI through macOS Accessibility.",
-    ),
-    "state": (
-        "notion_ai_local_control.check_ai_state",
-        "main",
-        "Inspect the current Notion AI state.",
-    ),
-    "open": (
-        "notion_ai_local_control.open_ai_window",
-        "main",
-        "Open or check the Notion AI window.",
-    ),
 }
 
 DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
-    "search": (
-        "notion_ai_local_control.search_element",
-        "main",
-        "Search or list visible Accessibility elements.",
-    ),
-    "input": (
-        "notion_ai_local_control.input_box",
-        "main",
-        "Read, write, clear, or attach files to the input box.",
-    ),
-    "model": (
-        "notion_ai_local_control.model_selector",
-        "main",
-        "Read or switch the current Notion AI model.",
-    ),
-    "click": (
-        "notion_ai_local_control.click_element",
-        "main",
-        "Click a labeled Accessibility element.",
-    ),
-    "focus": (
-        "notion_ai_local_control.focus_element",
-        "main",
-        "Focus a labeled Accessibility element.",
-    ),
-    "watch-state": (
-        "notion_ai_local_control.watch_state",
-        "main",
-        "Continuously watch Notion AI state.",
-    ),
-    "watch-focus": (
-        "notion_ai_local_control.watch_focus",
-        "main",
-        "Continuously watch focused Accessibility elements.",
-    ),
     "beta-cdp-input": (
         "notion_ai_local_control.beta_cdp_input",
         "main",
@@ -90,15 +40,10 @@ def print_help() -> None:
     print("常用示例:")
     print('  notion-ai ask "1+1" --json')
     print('  notion-ai ask-cdp "1+1" --json')
-    print('  notion-ai ask-ax "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
-    print("  notion-ai state --json")
-    print("  notion-ai open --check")
     print()
     print("调试示例:")
-    print('  notion-ai search "拷贝回复"')
-    print("  notion-ai input --read")
-    print("  notion-ai model --current")
+    print("  notion-ai beta-cdp-input --status")
     print()
     print("常用 command:")
     width = max(len(name) for name in COMMANDS)
@@ -127,7 +72,7 @@ def _run_argv_main(command: str, argv: list[str]) -> int:
 
     old_argv = sys.argv[:]
     sys.argv = [f"notion-ai {command}", *argv]
-    if command in ("ask", "ask-ax"):
+    if command in ("ask", "ask-cdp"):
         try:
             result = target(argv)
             return int(result or 0)

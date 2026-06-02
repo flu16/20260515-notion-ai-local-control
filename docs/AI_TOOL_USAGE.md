@@ -1,634 +1,109 @@
-# AI Tool Usage Guide
+# Notion AI Tool Usage
 
-这份文件给其他 AI/编码代理使用，例如 OpenClaude、Claude Code、Codex 或类似工具。
+本文档给 AI agent / 自动化调用方使用。当前项目只保留 CDP 路线。
 
-本项目的目标不是让 AI 直接操作 Notion UI 的细节，而是提供一个稳定命令行入口，
-让 AI 可以向 Notion AI 提问，并拿到最终回复文本。
-
-## 核心协作原则
-
-Notion AI 使用最新的大模型，是本项目中给编码代理使用的高级协作对象。
-
-当 agent 遇到任何困难、卡住、判断不确定，或碰到自己无法独立解决的代码问题时，
-必须第一时间通过本文档提供的命令行入口和 Notion AI 讨论，再继续推进实现或修复。
-不要把 Notion AI 只当作最后兜底工具；它应该在问题刚变得困难时就被主动调用。
-
-## 最重要的工具
-
-首选工具是：
+## 首选命令
 
 ```bash
 ./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-[任意长代码 / 任意长提示词 / 短问题]
+[问题文本]
 NOTION_AI_AGENT_EOF
 ```
 
-这是给 AI/自动化代理调用 Notion AI 的主入口。除非是在调试底层 UI 能力，否则不要绕过它去直接点击
-Notion UI、手动找输入框、手动点复制按钮或组合多个底层脚本。
+`ask` 和 `ask-cdp` 等价。
 
-AI 调用方无论问题简单还是复杂，都统一使用 `--from-stdin` 加单引号 heredoc。
-这能避免 shell 引号、换行、代码块、路径空格和 `$()` 等内容被命令行提前解析。
-注意：`--from-stdin` 只是问题来源；主流程会通过 Electron CDP 写入
-`https://www.notion.so/quick-search` 的 DOM 输入框。
-直接把问题作为命令行参数只适合人工临时调试；`--from-clipboard` 保留给人工调试和旧自动化兼容。
+## 对话上下文
 
-它会完成完整流程：
+默认行为：先开始新对话，再提交问题。
 
-1. 确保 Notion CDP 端口可用；不可用时自动重启 Notion 并带 `--remote-debugging-port=9222`。
-2. 定位唯一 `https://www.notion.so/quick-search` target。
-3. 通过 CDP 清空并写入 Notion AI 输入框。
-4. 点击 `提交 AI 消息`。
-5. 等待 AI 生成完成。
-6. 点击最新回复底部的 `拷贝回复`。
-7. 清空剪贴板后等待复制结果写入，并读取当前剪贴板内容作为回复。
-8. 把回复文本输出到命令行。
+如果问题是独立任务，直接使用默认流程：
 
-如果只是把一个长任务发布给 Notion AI，不需要本地代理等待最终回复，使用
-`--assign_task`：
+```bash
+./venv/bin/notion-ai ask --from-stdin --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
+[独立问题]
+NOTION_AI_AGENT_EOF
+```
+
+如果问题是在继续、追问、改写、扩展或引用当前 Notion AI 对话，显式使用 `--continue_conversation`：
+
+```bash
+./venv/bin/notion-ai ask --from-stdin --continue_conversation --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
+[连续追问]
+NOTION_AI_AGENT_EOF
+```
+
+## 发布长任务
+
+`--assign_task` 会在提交后只等待 AI 进入生成中，然后返回；不会等待完成，也不会复制回复。
 
 ```bash
 ./venv/bin/notion-ai ask --from-stdin --assign_task --json << 'NOTION_AI_AGENT_EOF'
-[任意长任务]
+[长任务]
 NOTION_AI_AGENT_EOF
 ```
 
-这个模式在提交后只等到 `conversation_state=generating`，确认 AI 已经开始生成就返回；
-不会等待完成、不会回到底部，也不会复制回复。
+## 附件
 
-## 对话上下文策略
-
-调用方必须先判断这次问题和当前 Notion AI 对话是不是同一个系列。
-
-### 同一系列问题：沿用当前对话
-
-如果这次问题是在继续、追问、改写、扩展或引用上一轮 Notion AI 的回复，默认不要开新对话。
+`--attach-file` 可重复传入多个文件：
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
-[连续追问]
-NOTION_AI_AGENT_EOF
+./venv/bin/notion-ai ask --attach-file ./report.pdf --attach-file ./notes.md --json "总结这些文件"
 ```
 
-不要加 `--new_conversation`。这样 Notion AI 会保留当前对话上下文，适合连续相关的问题。
+## JSON 输出
 
-### 独立问题：才新开对话
-
-只有当问题应该不受当前 Notion AI 对话上下文影响时，才显式使用 `--new_conversation`：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --new_conversation --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
-[独立问题]
-NOTION_AI_AGENT_EOF
-```
-
-`--new_conversation` 会先点击 `开始新对话`，确认对话框回到新对话状态后再输入问题。
-
-不要因为“每次工具调用都想干净”而机械地加 `--new_conversation`。连续相关的多轮问答需要沿用当前对话。
-
-## 推荐调用方式
-
-### 延续当前对话继续提问
-
-如果问题与当前 Notion AI 对话是同一个任务、同一个主题或同一轮分析，使用：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
-[连续追问]
-NOTION_AI_AGENT_EOF
-```
-
-不要加 `--new_conversation`。
-
-### 新开一个对话再提问
-
-如果你希望问题不受当前 Notion AI 对话上下文影响，使用：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --new_conversation --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
-[独立问题]
-NOTION_AI_AGENT_EOF
-```
-
-`--new_conversation` 会先点击 `开始新对话`，确认对话框回到新对话状态后再输入问题。
-
-### 获取 JSON 结果
-
-如果你是 AI 代理，推荐使用 JSON，便于判断成功或失败：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-[任意长代码 / 任意长提示词 / 短问题]
-NOTION_AI_AGENT_EOF
-```
-
-成功时的典型结构：
+成功时：
 
 ```json
 {
   "success": true,
-  "text": "OK",
-  "elapsed": 18.4,
-  "final_state": {
-    "targetUrl": "https://www.notion.so/quick-search",
-    "hasStop": false,
-    "copyReplyCount": 1
-  },
+  "text": "...",
+  "elapsed": 4.2,
   "error": null
 }
 ```
 
-发布任务模式成功时的典型结构：
-
-```json
-{
-  "success": true,
-  "text": "",
-  "mode": "assign_task",
-  "elapsed": 2.1,
-  "final_state": {
-    "success": true,
-    "conversation_state": "generating",
-    "input_state": "generating"
-  },
-  "error": null
-}
-```
-
-失败时的典型结构：
+失败时：
 
 ```json
 {
   "success": false,
   "text": "",
-  "step": "wait_finished",
-  "error": "等待生成完成并进入稳定对话框状态 超时 (300.0s)"
+  "step": "cdp",
+  "error": "..."
 }
 ```
 
-AI 调用方应该只把 `success=true` 时的 `text` 当作 Notion AI 回复。
+调用方只应在 `success=true` 时读取 `text`。
 
-### 默认使用 heredoc/stdin 传入
+## CDP 调试
 
-AI 调用方无论问题简单还是复杂，都不要把问题拼进 shell 命令字符串。
-统一使用 `--from-stdin` 加单引号 heredoc：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-[任意长代码 / 任意长提示词 / 短问题]
-NOTION_AI_AGENT_EOF
-```
-
-`--from-stdin` 会从标准输入读取问题文本；写入 Notion AI 输入框时，脚本通过 CDP 操作 quick-search DOM 输入框。
-单引号 heredoc 会让 shell 按字面量传输内容，绕开引号、换行、`$(...)` 和路径空格的解析问题。
-
-如果这段问题是独立任务，再额外加 `--new_conversation`；如果是连续追问，不要加。
-
-### 输入框残留会自动清空
-
-调用方不需要先手动清空 Notion AI 输入框。`notion-ai ask` 写入问题前会通过 CDP 清空
-quick-search 输入框，再写入新问题。
-
-不要在外层脚本里额外组合 `input_box.py --clear`、鼠标点击或手写快捷键清空；直接调用
-`notion-ai ask`。
-
-## 参数说明
-
-### `question`
-
-要提交给 Notion AI 的问题。使用 `--from-stdin` 或 `--from-clipboard` 时可以省略。
-AI/自动化调用方默认使用 `--from-stdin`，此参数主要用于人工临时调试。
-
-人工临时调试时可以直接传入：
+检查 quick-search target 和输入框状态：
 
 ```bash
-./venv/bin/notion-ai ask "用中文解释一下 Accessibility API"
+./venv/bin/notion-ai beta-cdp-input --status
 ```
 
-AI 调用方默认推荐：
+写入输入框：
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-[任意长代码 / 任意长提示词 / 短问题]
-NOTION_AI_AGENT_EOF
+./venv/bin/notion-ai beta-cdp-input "测试文本"
 ```
 
-### `--from-stdin`
-
-可选。从 stdin 读取问题文本。AI/自动化调用方默认应该使用它，即使是短问题也保持同一种格式：
+清空输入框：
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-你好
-NOTION_AI_AGENT_EOF
+./venv/bin/notion-ai beta-cdp-input --clear
 ```
 
-它只负责从 stdin 获取问题；后续写入 Notion AI 输入框使用 CDP DOM 输入流程。
+## Agent 调用建议
 
-适合：
-
-- 简单问题和复杂问题
-- 问题包含 shell 代码里的 `'single quotes'`
-- 问题包含未配对引号、反斜杠、Markdown 代码块
-- 问题来自上游代理生成的长文本
-- 不想让调用方先手动执行 `pbcopy`
-
-### `--from-clipboard`
-
-可选。从系统剪贴板读取问题文本。保留给人工调试和旧自动化兼容。
-
-适合：
-
-- 已经在编辑器或其他 App 里复制好的内容
-- 人工临时调试
-- 旧脚本兼容
-
-### Agent 如何写入剪贴板
-
-正常情况下，agent 不需要自己写剪贴板；优先使用 `--from-stdin`。如果必须兼容旧调用方，可以用 `pbcopy` 加单引号 heredoc：
-
-```bash
-pbcopy << 'NOTION_AI_AGENT_EOF'
-你好
-NOTION_AI_AGENT_EOF
-
-./venv/bin/notion-ai ask --from-clipboard --json
-```
-
-Python 旧调用方可以用 `subprocess.run(["pbcopy"], input=...)`，不要用 `shell=True` 拼接问题文本：
-
-```python
-import json
-import subprocess
-
-question = "请解释一下 MCP，并给一个例子"
-subprocess.run(["pbcopy"], input=question, text=True, check=True)
-
-cmd = [
-    "./venv/bin/notion-ai",
-    "ask",
-    "--from-clipboard",
-    "--timeout",
-    "300",
-    "--json",
-]
-
-completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
-result = json.loads(completed.stdout)
-```
-
-### `--new_conversation`
-
-可选。先开始新对话，再提交问题。
-
-只推荐在独立任务中使用它，避免受到旧上下文影响。
-
-适合：
-
-- 单次问答
-- 让 Notion AI 处理一段独立输入
-- 需要可复现结果
-
-不适合：
-
-- 连续相关问题
-- 对上一轮回复继续追问、扩写、修正或让它换格式
-- 明确要延续当前对话
-- 要让 Notion AI 继续上一轮回答
-
-### `--timeout`
-
-可选。等待生成完成的最长秒数，默认 `300`。
-
-在 `--assign_task` 模式下，它表示等待 AI 进入 `generating` 的最长秒数。
-
-建议：
-
-- 短问题：通常不用设置，默认会在生成完成后立刻返回
-- 很长的故事、总结或复杂分析：`300` 到 `600`
-
-示例：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --new_conversation --timeout 600 --json << 'NOTION_AI_AGENT_EOF'
-[独立长问题]
-NOTION_AI_AGENT_EOF
-```
-
-### `--attach-file`
-
-可选。把本地文件作为附件加入 Notion AI 上下文，可重复传入多个文件。
-
-文件类型限制：Notion AI 当前支持图片、PDF、CSV、Markdown、纯文本。本项目会在粘贴前按扩展名拦截不支持的文件。
-
-当前允许：
-
-- 图片：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`、`.heif`
-- 文档/数据：`.pdf`、`.csv`
-- Markdown / 纯文本：`.md`、`.markdown`、`.txt`
-
-不要传入 `.docx`、`.xlsx`、`.json` 等不支持的文件；需要时先转换成 PDF、CSV、Markdown 或纯文本。
-
-脚本会先写入问题文本，再保持当前输入状态粘贴文件；如果出现“你是否信任这些文件？”
-提示，会自动按 `允许上传`。附件是否成功进入上下文以
-`从上下文中移除{文件名}` 按钮作为确认信号。
-
-如果附件上传失败，Notion 可能只短暂闪现 `上传失败请重试`，自动化通常扫不到这句文案。
-因此脚本不依赖失败文案；如果等不到 `从上下文中移除{文件名}`，会返回 `step=wait_attachments`
-失败。调用方应将其视为附件未上传成功，并重试整个请求。
-
-上传过程中可能看到附件卡片左侧的转圈状态。该状态在 AX 中通常是无文字的
-`AXGroup / roleDesc=状态`，只能说明仍在上传中，不能作为上传成功信号。
-
-示例：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --attach-file ./report.pdf --json << 'NOTION_AI_AGENT_EOF'
-总结这个文件
-NOTION_AI_AGENT_EOF
-```
-
-### `--assign_task`
-
-可选。发布任务模式。
-
-适合把长任务交给 Notion AI 后立刻释放本地代理，例如让远端 AI 写长文、做复杂整理或执行
-预计会等待很久的任务。脚本只确认 AI 已经进入 `generating`，不等待最终回复，也不会输出回复文本。
-
-示例：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --assign_task --json << 'NOTION_AI_AGENT_EOF'
-[任意长任务]
-NOTION_AI_AGENT_EOF
-```
-
-### `--json`
-
-可选。输出结构化 JSON。
-
-AI/自动化脚本优先使用这个参数。
-
-### `--quiet`
-
-可选。减少过程日志。
-
-如果已经使用 `--json`，脚本会自动安静运行，只输出 JSON。
-
-## 状态模型
-
-`check_ai_state` 和 `notion-ai ask` 使用同一套状态模型。
-
-### 对话框状态
-
-`conversation_state` 只表示阶段：
-
-```text
-new_conversation
-generating
-complete
-unknown
-```
-
-含义：
-
-- `new_conversation`：对话框区域仍是新对话，通常只有初始问候语
-- `generating`：AI 正在生成
-- `complete`：AI 回复已完成
-- `unknown`：没有命中稳定规则，通常是短暂过渡或异常状态
-
-### 贴底状态
-
-是否贴住底部由单独字段表示：
-
-```json
-"is_attach_to_bottom": true
-```
-
-含义：
-
-- `true`：完成态已贴住底部，可以看到最新回复操作区
-- `false`：新对话、生成中、脱离底部或未知状态
-
-长回复完成时经常会先出现：
-
-```json
-{
-  "conversation_state": "complete",
-  "is_attach_to_bottom": false
-}
-```
-
-这段是 legacy AX 状态字段。默认 CDP 路线不依赖贴底判断；它会在 DOM 中寻找最新可用的
-`拷贝回复` 按钮。
-
-### 新对话状态
-
-是否新对话由：
-
-```json
-"is_new_conversation": true
-```
-
-表示。
-
-这个判断只看对话框区域，不看输入框区域。也就是说，如果用户已经在新对话输入框里打字但还没提交，
-它仍然可能是新对话。
-
-## 辅助工具
-
-### 检查当前状态
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state --json
-```
-
-如果项目已经执行过 `./venv/bin/python -m pip install -e .`，也可以使用统一 CLI：
-
-```bash
-./venv/bin/notion-ai state --json
-```
-
-用于调试当前 Notion AI 状态。
-
-典型输出：
-
-```json
-{
-  "success": true,
-  "is_new_conversation": false,
-  "is_attach_to_bottom": true,
-  "conversation_state": "complete",
-  "input_state": "empty",
-  "model": "Opus 4.7"
-}
-```
-
-### 持续监听状态
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.watch_state
-```
-
-安装后也可以用：
-
-```bash
-./venv/bin/notion-ai watch-state
-```
-
-会每 0.5 秒扫描一次，只在状态变化时输出。
-
-### 打开 Notion AI 窗口
-
-默认 CDP 路线不会用系统热键自动打开窗口。它会确保 CDP 端口可用，并要求
-`https://www.notion.so/quick-search` 浮层 target 已存在。
-
-如果错误提示找不到 quick-search target，请手动打开 Notion AI 命令搜索浮层后重试。
-legacy AX 调试时可以用：
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.open_ai_window --open
-```
-
-安装后也可以用：
-
-```bash
-./venv/bin/notion-ai open --open
-```
-
-这个命令是幂等的：如果窗口已经打开，不会再次发送快捷键。
-
-## AI 调用方的建议逻辑
-
-如果你是另一个 AI/自动化代理，请按下面逻辑调用：
-
-```text
 1. 优先使用 `./venv/bin/notion-ai ask`。
-2. 先判断是否同一系列问题：连续相关问题不要加 --new_conversation。
-3. 独立问题才加 --new_conversation。
-4. 长任务把 --timeout 提高到 600。
-5. 自动化场景使用 --json。
-6. 只在 success=true 时读取 text。
-7. 如果 success=false，读取 step 和 error 判断失败点。
-8. 不要直接用鼠标点击 Notion UI。
-9. 不要直接改 AXValue 试图输入文本。
-10. 不要用 Shift+Tab 来找复制按钮。
-```
-
-推荐伪代码：
-
-```python
-import json
-import subprocess
-
-question = "请解释一下 MCP，并给一个例子"
-cmd = [
-    "./venv/bin/notion-ai",
-    "ask",
-    "--from-stdin",
-    "--timeout",
-    "300",
-    "--json",
-]
-
-completed = subprocess.run(cmd, input=question, capture_output=True, text=True, check=False)
-result = json.loads(completed.stdout)
-
-if result["success"]:
-    answer = result["text"]
-else:
-    raise RuntimeError(f"{result.get('step')}: {result.get('error')}")
-```
-
-不要使用 `shell=True` 或把问题插入一整段 shell 命令字符串。`subprocess.run([...])`
-会把每个参数原样传给 Python 脚本，是最稳的调用方式。
-
-当前版本在 `--json` 下只输出 JSON。若需要兼容旧版本里 stdout 混入过程日志的情况，
-不要用 `stdout.splitlines()[-1]`，应该从 stdout 中扫描可解析的 JSON 对象：
-
-```python
-def extract_json_object(stdout: str) -> dict:
-    decoder = json.JSONDecoder()
-    last = None
-    for i, ch in enumerate(stdout):
-        if ch != "{":
-            continue
-        try:
-            obj, _ = decoder.raw_decode(stdout[i:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and "success" in obj and "text" in obj:
-            last = obj
-    if last is None:
-        raise ValueError("stdout 中没有找到 ask_and_copy_reply 的 JSON 结果")
-    return last
-```
-
-## 不推荐直接使用的底层脚本
-
-下面这些脚本主要用于调试或开发，不建议普通 AI 调用方直接依赖：
-
-- `search_element.py`
-- `click_element.py`
-- `focus_element.py`
-- `watch_focus.py`
-- `input_box.py`
-
-原因：
-
-- 它们是底层能力，不保证完整流程。
-- 直接组合它们容易绕过已经验证过的等待、贴底、剪贴板变化判断。
-- 目前稳定闭环已经在 `notion-ai ask` 中实现。
-
-## 常见失败和处理
-
-### quick-search 浮层未打开
-
-`notion-ai ask` 会自动确保 CDP 端口可用，但不会用 CuaDriver 或系统热键打开 quick-search 浮层。
-
-如果错误里提示找不到 `https://www.notion.so/quick-search` 或 visible textbox，
-请在 Notion 中打开 AI 命令搜索浮层后重试。
-
-AX legacy 调试时仍可使用 `notion-ai open --open`。
-
-### 生成超时
-
-提高 `--timeout`：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --new_conversation --timeout 600 --json << 'NOTION_AI_AGENT_EOF'
-[独立长问题]
-NOTION_AI_AGENT_EOF
-```
-
-### 复制后剪贴板为空
-
-脚本会返回失败。
-
-这通常说明：
-
-- `拷贝回复` 没有真正触发
-- Notion UI 短暂异常
-- 回复操作区没有稳定出现
-
-可以重试一次，或先用：
-
-```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.check_ai_state --json
-```
-
-查看是否已经：
-
-```json
-{
-  "conversation_state": "complete",
-  "is_attach_to_bottom": true
-}
-```
-
-## 当前边界
-
-- 这个工具依赖 macOS Accessibility 权限。
-- 这个工具依赖 Notion 桌面端当前 UI 结构。
-- Notion UI 改版后，按钮 label 或 AX 结构可能需要重新验证。
-- 这个工具目前不是 MCP server；它是一个稳定 CLI 工具。
-- 未来如果 CLI 接口稳定，可以再包装成 MCP。
+2. 独立问题使用默认流程。
+3. 连续追问才加 `--continue_conversation`。
+4. 长任务可加 `--timeout 600`。
+5. 自动化场景使用 `--json`。
+6. 只在 `success=true` 时读取 `text`。
+7. 如果 `success=false`，读取 `step` 和 `error` 判断失败点。
+8. 不要直接操作 Notion UI。
+9. 不要调用已删除的 AX legacy 命令。

@@ -29,12 +29,20 @@ from .beta_cdp_input import (
     wait_for_generation_finished_cdp as wait_for_generation_finished_observer,
     wait_for_generation_started_cdp as wait_for_generation_started_observer,
 )
-from .notion_ax import get_clipboard_text, set_clipboard_text
 
 
 def _print(message: str, quiet: bool = False) -> None:
     if not quiet:
         print(message, flush=True)
+
+
+def get_clipboard_text() -> str:
+    result = subprocess.run(["pbpaste"], capture_output=True, text=True, check=False)
+    return result.stdout
+
+
+def set_clipboard_text(text: str) -> None:
+    subprocess.run(["pbcopy"], input=text, text=True, check=True)
 
 
 def _question_marker(question: str) -> str:
@@ -316,7 +324,7 @@ def copy_latest_reply_cdp(timeout: float = 10.0,
 
 def ask_and_copy_reply_cdp(question: str,
                            timeout: float = 300.0,
-                           new_conversation: bool = False,
+                           continue_conversation: bool = False,
                            assign_task: bool = False,
                            attach_files: list[str] | None = None,
                            quiet: bool = False,
@@ -336,8 +344,9 @@ def ask_and_copy_reply_cdp(question: str,
         )
         launch_info = ready.get("launch_info") if isinstance(ready, dict) else None
 
-        if new_conversation:
-            _print("1. CDP 开始新对话", quiet)
+        step_number = 1
+        if not continue_conversation:
+            _print(f"{step_number}. CDP 开始新对话", quiet)
             clicked = start_new_conversation_cdp(port, QUICK_SEARCH_URL)
             if not clicked.get("ok"):
                 return {
@@ -348,9 +357,10 @@ def ask_and_copy_reply_cdp(question: str,
                     "details": clicked,
                 }
             wait_for_cdp_ready(port, QUICK_SEARCH_URL)
+            step_number += 1
 
         if attach_files:
-            _print("2. CDP 上传附件到上下文", quiet)
+            _print(f"{step_number}. CDP 上传附件到上下文", quiet)
             attached = set_file_input_files(attach_files, port, QUICK_SEARCH_URL)
             if not attached.get("ok"):
                 return {
@@ -374,8 +384,9 @@ def ask_and_copy_reply_cdp(question: str,
                     "files": context_ready.get("files", []),
                     "final_state": context_ready.get("state") or context_ready.get("status"),
                 }
+            step_number += 1
 
-        _print("3. CDP 写入并提交问题", quiet)
+        _print(f"{step_number}. CDP 写入并提交问题", quiet)
         wait_for_cdp_ready(port, QUICK_SEARCH_URL)
         submitted = set_text_and_submit(question, port, QUICK_SEARCH_URL)
         if not submitted.get("ok"):
@@ -386,9 +397,10 @@ def ask_and_copy_reply_cdp(question: str,
                 "error": submitted.get("error"),
                 "details": submitted,
             }
+        step_number += 1
 
         if assign_task:
-            _print("4. 等待 CDP 生成开始", quiet)
+            _print(f"{step_number}. 等待 CDP 生成开始", quiet)
             started = wait_until_generation_started_cdp(
                 question,
                 timeout=timeout,
@@ -414,7 +426,7 @@ def ask_and_copy_reply_cdp(question: str,
                 "error": None,
             }
 
-        _print("4. 等待 CDP 生成完成", quiet)
+        _print(f"{step_number}. 等待 CDP 生成完成", quiet)
         finished = wait_until_generation_finished_cdp(
             question,
             timeout=timeout,
@@ -429,8 +441,9 @@ def ask_and_copy_reply_cdp(question: str,
                 "error": finished["error"],
                 "final_state": finished.get("state"),
             }
+        step_number += 1
 
-        _print("5. CDP 拷贝最新回复", quiet)
+        _print(f"{step_number}. CDP 拷贝最新回复", quiet)
         copied = copy_latest_reply_cdp(timeout=10.0, quiet=quiet, port=port)
         if not copied["success"]:
             return {
@@ -459,7 +472,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--from-stdin", action="store_true", help="从 stdin 读取问题文本")
     parser.add_argument("--from-clipboard", action="store_true", help="从系统剪贴板读取问题文本")
     parser.add_argument("--timeout", "-t", type=float, default=300.0)
-    parser.add_argument("--new_conversation", action="store_true", help="先开始新对话")
+    parser.add_argument("--continue_conversation", action="store_true",
+                        help="沿用当前对话；默认会先开始新对话")
     parser.add_argument("--assign_task", action="store_true", help="提交后只等待进入生成中")
     parser.add_argument(
         "--attach-file",
@@ -505,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     result = ask_and_copy_reply_cdp(
         args.question,
         timeout=args.timeout,
-        new_conversation=args.new_conversation,
+        continue_conversation=args.continue_conversation,
         assign_task=args.assign_task,
         attach_files=args.attach_files,
         quiet=args.quiet or args.json,
