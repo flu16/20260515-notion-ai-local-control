@@ -26,6 +26,8 @@ DEFAULT_PORT = 9222
 NOTION_BUNDLE_ID = "notion.id"
 NOTION_EXECUTABLE = Path("/Applications/Notion.app/Contents/MacOS/Notion")
 QUICK_SEARCH_URL = "https://www.notion.so/quick-search"
+QUICK_SEARCH_ALLOWED_HOSTS = {"www.notion.so", "app.notion.com"}
+QUICK_SEARCH_PATH = "/quick-search"
 TEXTBOX_SELECTOR = '[contenteditable="true"][role="textbox"]'
 DEFAULT_WAIT_TEXTBOX_TIMEOUT = 10.0
 DEFAULT_WAIT_TEXTBOX_INTERVAL = 0.2
@@ -334,11 +336,20 @@ def _page_target_summary(targets: list[dict]) -> list[dict]:
 
 
 def _assert_quick_search_url(url: str) -> None:
-    if url != QUICK_SEARCH_URL:
+    if not _is_quick_search_url(url):
         raise CdpError(
             "CDP is locked to the Notion quick-search floating window. "
-            f"Refusing target URL {url!r}; expected {QUICK_SEARCH_URL!r}."
+            f"Refusing target URL {url!r}; expected a Notion quick-search URL."
         )
+
+
+def _is_quick_search_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc in QUICK_SEARCH_ALLOWED_HOSTS
+        and parsed.path == QUICK_SEARCH_PATH
+    )
 
 
 def find_target(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
@@ -347,7 +358,7 @@ def find_target(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
     matches = [
         target for target in targets
         if target.get("type") == "page"
-        and target.get("url") == QUICK_SEARCH_URL
+        and _is_quick_search_url(target.get("url", ""))
         and target.get("title") != "Notion AI"
     ]
     if len(matches) == 1:
@@ -356,7 +367,7 @@ def find_target(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
     available = _page_target_summary(targets)
     if not matches:
         raise CdpError(
-            f"Quick-search CDP target not found for {QUICK_SEARCH_URL}. "
+            f"Quick-search CDP target not found for {url}. "
             f"Ignoring Notion AI and other page targets: {available}"
         )
     raise CdpError(
@@ -1359,7 +1370,6 @@ def main() -> int:
     parser.add_argument("text", nargs="?", help="Text to write into Notion AI.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--url", default=QUICK_SEARCH_URL,
-                        choices=[QUICK_SEARCH_URL],
                         help="CDP target URL. Locked to the quick-search floating window.")
     parser.add_argument("--restart-with-cdp", action="store_true",
                         help="Quit Notion and relaunch it with the CDP port.")
