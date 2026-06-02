@@ -16,7 +16,7 @@ COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
 }
 
 DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
-    "beta-cdp-input": (
+    "cdp-debug": (
         "notion_ai_local_control.beta_cdp_input",
         "main",
         "Debug: read/write the Notion AI quick-search textbox through CDP.",
@@ -37,7 +37,7 @@ def print_help() -> None:
     print("  notion-ai ask --from-stdin --json")
     print()
     print("调试示例:")
-    print("  notion-ai beta-cdp-input --status")
+    print("  notion-ai cdp-debug --status")
     print()
     print("常用 command:")
     width = max(len(name) for name in COMMANDS)

@@ -79,19 +79,19 @@ NOTION_AI_AGENT_EOF
 检查 quick-search target 和输入框状态：
 
 ```bash
-./venv/bin/notion-ai beta-cdp-input --status
+./venv/bin/notion-ai cdp-debug --status
 ```
 
 写入输入框：
 
 ```bash
-./venv/bin/notion-ai beta-cdp-input "测试文本"
+./venv/bin/notion-ai cdp-debug "测试文本"
 ```
 
 清空输入框：
 
 ```bash
-./venv/bin/notion-ai beta-cdp-input --clear
+./venv/bin/notion-ai cdp-debug --clear
 ```
 
 ## Agent 调用建议

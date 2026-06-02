@@ -73,7 +73,7 @@
 统一 CLI 入口。当前命令：
 
 - `ask`
-- `beta-cdp-input`
+- `cdp-debug`
 
 ### `src/notion_ai_local_control/ask_cdp.py`
 
@@ -103,7 +103,7 @@ CDP 底层能力：
 ./venv/bin/notion-ai ask "1+1" --json
 ./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
 ./venv/bin/notion-ai ask --from-stdin --assign_task --json
-./venv/bin/notion-ai beta-cdp-input --status
+./venv/bin/notion-ai cdp-debug --status
 ```
 
 ## 验证
@@ -112,6 +112,6 @@ CDP 底层能力：
 ./venv/bin/python -m compileall -q src
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai ask --help
-./venv/bin/notion-ai beta-cdp-input --status
+./venv/bin/notion-ai cdp-debug --status
 ./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```

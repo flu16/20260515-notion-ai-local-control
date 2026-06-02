@@ -46,7 +46,7 @@ NOTION_AI_AGENT_EOF
 CDP 调试命令：
 
 ```bash
-./venv/bin/notion-ai beta-cdp-input --status
+./venv/bin/notion-ai cdp-debug --status
 ```
 
 ## 能力边界
@@ -77,6 +77,6 @@ CDP 调试命令：
 ./venv/bin/python -m compileall -q src
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai ask --help
-./venv/bin/notion-ai beta-cdp-input --status
+./venv/bin/notion-ai cdp-debug --status
 ./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```
