@@ -67,7 +67,7 @@ CDP 调试命令：
 └── src/notion_ai_local_control/
     ├── __init__.py
     ├── cli.py              # notion-ai 统一入口
-    ├── ask_cdp.py          # ask/ask-cdp 的 CDP 提问流程
+    ├── ask_cdp.py          # ask 的 CDP 提问流程
     └── beta_cdp_input.py   # CDP target、DOM 输入、提交、附件与复制底层能力
 ```
 
@@ -77,7 +77,6 @@ CDP 调试命令：
 ./venv/bin/python -m compileall -q src
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai ask --help
-./venv/bin/notion-ai ask-cdp --help
 ./venv/bin/notion-ai beta-cdp-input --status
 ./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```

@@ -10,8 +10,6 @@
 NOTION_AI_AGENT_EOF
 ```
 
-`ask` 和 `ask-cdp` 等价。
-
 ## 对话上下文
 
 默认行为：先开始新对话，再提交问题。

@@ -18,7 +18,7 @@
 
 ### 只使用 CDP
 
-`notion-ai ask` 默认调用 CDP 流程。`notion-ai ask-cdp` 是兼容别名。
+`notion-ai ask` 调用 CDP 流程。
 
 项目不再包含 macOS Accessibility legacy 代码，也不提供 `ask-ax`、`state`、`search`、`input`、`model`、`open` 等 AX/debug 命令。
 
@@ -73,7 +73,6 @@
 统一 CLI 入口。当前命令：
 
 - `ask`
-- `ask-cdp`
 - `beta-cdp-input`
 
 ### `src/notion_ai_local_control/ask_cdp.py`
