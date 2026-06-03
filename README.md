@@ -1,109 +1,108 @@
 # Notion AI Local Control
 
-用 Electron CDP 控制 Notion 桌面端的 Notion AI quick-search 浮动窗口。正式入口是统一 CLI：
+Local control helpers for Notion desktop Notion AI through Electron CDP.
+
+The project exposes one CLI:
 
 ```bash
-./venv/bin/notion-ai ask "1+1" --json
+./venv/bin/notion-ai <command> [args...]
 ```
 
-首次使用或重建虚拟环境后，先安装 editable package：
+If the editable package is not installed, use:
+
+```bash
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli <command> [args...]
+```
+
+## Setup
 
 ```bash
 ./venv/bin/python -m pip install -e .
 ```
 
-未安装时可以直接用模块方式调用：
+Start Notion with CDP enabled:
 
 ```bash
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask "1+1" --json
+./venv/bin/notion-ai start --json
 ```
 
-## 常用命令
-
-向 Notion AI 提问并复制回复：
+Check CDP:
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
-解释一下这个项目现在的结构
-NOTION_AI_AGENT_EOF
+curl -fsS http://127.0.0.1:9222/json/version
+curl -fsS http://127.0.0.1:9222/json/list
 ```
 
-`notion-ai ask` 默认会先开始新对话，避免受到上一轮上下文影响。
-如果要沿用当前 Notion AI 对话，请加 `--continue_conversation`：
+## Main Commands
+
+Quick-search flow: ask Notion AI and copy the final reply.
 
 ```bash
-./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
+./venv/bin/notion-ai start
+./venv/bin/notion-ai ask_and_reply "请只回复：OK" --json
+./venv/bin/notion-ai ask_and_reply --from-stdin --json < prompt.txt
+./venv/bin/notion-ai ask_and_reply "继续刚才的话题" --continue_conversation --json
 ```
 
-发布任务后只等待 AI 开始生成：
-
-```bash
-./venv/bin/notion-ai ask --from-stdin --assign_task --json << 'NOTION_AI_AGENT_EOF'
-请分析这份长任务
-NOTION_AI_AGENT_EOF
-```
-
-CDP 调试命令：
+Debug the quick-search CDP target:
 
 ```bash
 ./venv/bin/notion-ai cdp-debug --status
+./venv/bin/notion-ai cdp-debug --clear
 ```
 
-通过 Notion 桌面端主 app 创建新 Notion AI 对话并返回 conversation token：
+Main app tab flow: create or reuse Notion AI conversations and work by token.
 
 ```bash
 ./venv/bin/notion-ai app ask "请只回复：OK" --json
-./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
-```
-
-继续指定主 app Notion AI 对话时只需要 conversation token：
-
-```bash
-./venv/bin/notion-ai app ask --token <token> "继续刚才的话题" --json
-./venv/bin/notion-ai app ask --token <token> --model "Opus 4.8" "换模型继续" --json
 ./venv/bin/notion-ai app get-reply --token <token> --json
 ./venv/bin/notion-ai app get-reply --token <token-1> <token-2> <token-3> --json
-```
-
-关闭指定主 app Notion AI 对话标签：
-
-```bash
+./venv/bin/notion-ai app ask --token <token> "继续刚才的话题" --json
 ./venv/bin/notion-ai app close-conversation --token <token> --json
+./venv/bin/notion-ai app status --all --json
 ```
 
-## 能力边界
+## Current Behavior
 
-- 只保留 CDP 路线，不再包含 macOS Accessibility legacy 代码。
-- `ask` 只操作 Notion quick-search target，支持 `https://www.notion.so/quick-search` 和 `https://app.notion.com/quick-search`。
-- 如果 `127.0.0.1:9222` 不可用，默认会重启 Notion 并带 `--remote-debugging-port=9222` 启动。
-- `--attach-file` 支持 Notion AI 当前可上传的图片、PDF、CSV、Markdown、纯文本和常见代码/文本文件。
+- `ask_and_reply` controls the quick-search target (`https://app.notion.com/quick-search`), waits for completion, and copies the final reply.
+- `app ask` creates or resolves a main-app Notion AI page, submits the question, and returns the conversation token.
+- `app get-reply` can collect multiple tokens in one command.
+- New main-app conversations are serialized with a local lock so concurrent `app ask` calls do not write into the same tab.
+- New main-app conversations are bound by CDP target id first; after submit, the user-facing handle is the URL token (`t=...`).
+- If a new Notion tab first appears as a blank page, the code navigates that same target id to `https://app.notion.com/ai` and then submits there.
 
-## 项目地图
+## Known Limits
+
+- `app ask --model ...` / multi-model fan-out currently times out in the model selector UI path.
+- Tab Bar label matching can report `activation.ok=false` while `/json/activate/<targetId>` succeeds; CDP input can still work.
+- Not every empty URL target has the logged-in Notion context. Direct navigation to `/ai` must verify that the target reaches an AI textbox rather than `/login`.
+- Notion copy uses app internals/Electron behavior, so the project triggers React handlers and then reads `pbpaste`.
+
+## Project Map
 
 ```text
 .
 ├── README.md
 ├── PROJECT.md
+├── HANDOFF.md
 ├── docs/
 ├── pyproject.toml
 └── src/notion_ai_local_control/
     ├── __init__.py
-    ├── cli.py              # notion-ai 统一入口
-    ├── ask_cdp.py          # ask 的 CDP 提问流程
-    ├── tab_bar_cdp.py      # 主 app Tab Bar 控制
-    └── beta_cdp_input.py   # CDP target、DOM 输入、提交、附件与复制底层能力
+    ├── cli.py
+    ├── ask_cdp.py
+    ├── beta_cdp_input.py
+    └── tab_bar_cdp.py
 ```
 
-## 验证
+## Verification
 
 ```bash
 ./venv/bin/python -m compileall -q src
 ./venv/bin/notion-ai --help
-./venv/bin/notion-ai ask --help
+./venv/bin/notion-ai start --json
 ./venv/bin/notion-ai cdp-debug --status
-./venv/bin/notion-ai app tab-bar-state --json
+./venv/bin/notion-ai ask_and_reply "请只回复：OK" --json --timeout 60
 ./venv/bin/notion-ai app ask "请只回复：OK" --json
-./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
 ./venv/bin/notion-ai app get-reply --token <token> --json
-./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```

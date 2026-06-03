@@ -8,7 +8,12 @@ from collections.abc import Callable
 
 
 COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
-    "ask": (
+    "start": (
+        "notion_ai_local_control.start_cdp",
+        "main",
+        "Start Notion desktop with Electron CDP enabled.",
+    ),
+    "ask_and_reply": (
         "notion_ai_local_control.ask_cdp",
         "main",
         "Ask Notion AI through Electron CDP and copy the final reply.",
@@ -38,8 +43,9 @@ def print_help() -> None:
     print("用法: notion-ai <command> [args...]")
     print()
     print("常用示例:")
-    print('  notion-ai ask "1+1" --json')
-    print("  notion-ai ask --from-stdin --json")
+    print("  notion-ai start --json")
+    print('  notion-ai ask_and_reply "1+1" --json')
+    print("  notion-ai ask_and_reply --from-stdin --json")
     print('  notion-ai app ask "请只回复：OK" --json')
     print()
     print("调试示例:")
@@ -72,7 +78,7 @@ def _run_argv_main(command: str, argv: list[str]) -> int:
 
     old_argv = sys.argv[:]
     sys.argv = [f"notion-ai {command}", *argv]
-    if command == "ask":
+    if command in {"ask_and_reply", "start"}:
         try:
             result = target(argv)
             return int(result or 0)

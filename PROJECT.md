@@ -1,137 +1,146 @@
-# Notion AI Local Control Project
+# Project Notes
 
-本文档面向后续接手本项目的 AI 或开发者，说明当前项目目标、结构和维护原则。
+This project controls Notion desktop Notion AI locally through Electron CDP.
 
-## 项目目标
+It does not call Notion private AI APIs, does not reuse session tokens, and does not depend on macOS Accessibility for the current main paths.
 
-本项目用于让本地程序通过 Electron CDP 操作 Notion 桌面端的 Notion AI quick-search 浮动窗口。
+## Runtime Assumptions
 
-当前项目只保留 CDP 路线：
+- Notion desktop is launched with `--remote-debugging-port=9222`.
+- CDP targets are discovered from `http://127.0.0.1:9222/json/list`.
+- CDP readiness is checked with `http://127.0.0.1:9222/json/version`.
+- System clipboard reads use `pbpaste`.
 
-- 通过 CDP 定位 Notion quick-search target
-- 通过 renderer DOM 写入、提交、等待并复制 Notion AI 回复
-- 在 CDP 端口不可用时重启 Notion，并带 `--remote-debugging-port=9222`
-- 支持 Notion AI 可上传附件
-- 默认先开始新对话；传 `--continue_conversation` 时沿用当前对话
+## Supported Paths
 
-## 核心原则
+### Quick-Search Flow
 
-### 只使用 CDP
-
-`notion-ai ask` 调用 CDP 流程。
-
-项目不再包含 macOS Accessibility legacy 代码，也不提供 `ask-ax`、`state`、`search`、`input`、`model`、`open` 等 AX/debug 命令。
-
-### 限定 quick-search
-
-主流程只接受 Notion quick-search target：
-
-- `https://www.notion.so/quick-search`
-- `https://app.notion.com/quick-search`
-
-它不操作 `https://www.notion.so/ai` 或 `https://app.notion.com/ai` 主页面。
-
-### 默认新对话
-
-`notion-ai ask` 默认先点击 `开始新对话`，再写入和提交问题。
-
-只有在明确要追问当前 Notion AI 对话时，才使用：
+Entry:
 
 ```bash
-./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
+notion-ai start
+notion-ai ask_and_reply ...
+notion-ai cdp-debug ...
 ```
 
-### 不接入系统鼠标事件
+Core files:
 
-项目不把系统鼠标点击接入程序逻辑。CDP 内部的 `Input.dispatchMouseEvent` 只用于 renderer 内部文件选择器流程，不移动真实鼠标。
+- `src/notion_ai_local_control/ask_cdp.py`
+- `src/notion_ai_local_control/beta_cdp_input.py`
 
-### 保持模块单一职责
+Flow:
 
-根目录不保留 Python 入口文件。正式入口是统一 CLI `notion-ai <command>`。
+1. Ensure the quick-search target is available.
+2. Optionally start a new quick-search conversation.
+3. Write text into the visible contenteditable textbox.
+4. Submit with CDP.
+5. Wait until the reply is actually complete.
+6. Trigger the latest copy-reply React handler.
+7. Read the system clipboard.
 
-`src/notion_ai_local_control/` 是真正的 Python 包。
+The quick-search completion check is intentionally stricter than `copyReplyCount > 0`. Old copy buttons can remain visible while a new answer is streaming. The current check waits for an enabled copy button below the current question after generation activity has been observed.
 
-## 项目结构
+### Main-App Token Flow
 
-```text
-.
-├── README.md
-├── PROJECT.md
-├── docs/
-├── pyproject.toml
-└── src/notion_ai_local_control/
-    ├── __init__.py
-    ├── cli.py
-    ├── ask_cdp.py
-    └── beta_cdp_input.py
+Entry:
+
+```bash
+notion-ai app ask ...
+notion-ai app get-reply ...
+notion-ai app status ...
+notion-ai app close-conversation ...
+notion-ai app restore-conversation ...
 ```
 
-## 模块说明
+Core file:
 
-### `src/notion_ai_local_control/cli.py`
+- `src/notion_ai_local_control/tab_bar_cdp.py`
 
-统一 CLI 入口。当前命令：
+Flow for new conversations:
 
-- `ask`
+1. Serialize new-conversation creation with a local lock.
+2. Create or reuse a Notion page target.
+3. Bind the operation to the CDP target id.
+4. If the target is blank, navigate that same target id to `https://app.notion.com/ai`.
+5. Verify the textbox is empty before writing.
+6. Submit the question in that target.
+7. Wait for the same target URL to become `chat?t=...`.
+8. Return the conversation token; later operations resolve by token.
+
+Flow for existing conversations:
+
+1. Resolve the target from the token.
+2. Activate/foreground if needed.
+3. Submit or copy reply in that target.
+
+## Important Findings
+
+- The stop button is not a reliable "still generating" signal by itself. It may remain visible after completion.
+- `copyReplyCount > 0` is also not enough. It can count an old reply while the current reply is still streaming.
+- The copy-reply button may have `aria-disabled="true"` even when the React handler can copy; native `button.disabled` is the useful enabled/disabled signal.
+- Notion's copy action does not go through `navigator.clipboard`; the project invokes the React parent fiber `onClick` and then waits for `pbpaste`.
+- New Notion tabs can first appear as blank or `app.notion.com/ai` targets with a generic title before becoming fully hydrated.
+- Some empty URL targets can navigate to `/ai` successfully; others redirect to `/login`, so direct navigation must verify the textbox.
+
+## Current Known Issues
+
+- `app ask --model ...` and multi-model fan-out currently timeout in `_select_main_app_model`.
+- Tab Bar click matching can be stale when titles have not hydrated. `/json/activate/<targetId>` often succeeds even when the Tab Bar click report says false.
+- Closing main-app AI tabs through the Tab Bar can fail to remove the CDP target; `/json/close/<targetId>` works as a stronger fallback.
+- There are no formal pytest/unittest tests yet. Verification is currently command-based.
+
+## Module Responsibilities
+
+### `cli.py`
+
+Thin command router for:
+
+- `start`
+- `ask_and_reply`
 - `app`
 - `cdp-debug`
 
-### `src/notion_ai_local_control/ask_cdp.py`
+### `start_cdp.py`
 
-用户级 CDP 提问流程：
+Starts or restarts Notion desktop with `--remote-debugging-port=<port>`, waits for `/json/version`, and reports the CDP browser version.
 
-1. 确保 CDP 端口可用，必要时重启 Notion。
-2. 默认开始新对话，除非传入 `--continue_conversation`。
-3. 可选上传附件。
-4. 写入并提交问题。
-5. 等待生成开始或完成。
-6. 点击复制回复，并用 `pbpaste` 读取剪贴板。
+### `ask_cdp.py`
 
-### `src/notion_ai_local_control/beta_cdp_input.py`
+User-facing quick-search ask_and_reply flow: readiness, optional attachment context, submit, wait, copy.
 
-CDP 底层能力：
+### `beta_cdp_input.py`
 
-- 列出和筛选 Notion CDP targets
-- 查找 quick-search 输入框
-- DOM 写入、清空、提交
-- 点击 `开始新对话` / `拷贝回复`
-- 文件上传
-- 等待生成状态
+Low-level quick-search CDP helpers:
 
-### `src/notion_ai_local_control/tab_bar_cdp.py`
+- target discovery
+- Runtime evaluation
+- textbox status/write/clear
+- submit and new conversation buttons
+- generation wait observers
+- file chooser handling
+- React fiber copy-reply handling
 
-主 app Tab Bar 控制能力：
+### `tab_bar_cdp.py`
 
-- 发现 Notion 桌面端 `Tab Bar` CDP target
-- 读取当前主 app 对话标签数量和 conversation token
-- `app ask` 无 token 时自动创建新的主 app Notion AI 对话、提交问题并返回 token
-- `app ask --model` 可在提交前按可见模型名称选择模型
-- `app ask --model A B C` 可打开多个新对话，用多个模型问同一个问题
-- `app get-reply --token A B C` 可按多个 token 逐个获取回复
-- 按 conversation token 关闭指定主 app 对话标签
-- 按 conversation token 在指定主 app Notion AI 对话中提问、等待完成并复制回复
+Main app and Tab Bar helpers:
 
-## 常用命令
+- page and Tab Bar target discovery
+- conversation token extraction
+- target id and token resolution
+- new conversation creation with local locking
+- blank target navigation to `/ai`
+- main-app textbox submission
+- multi-token reply collection
+- restore and close helpers
 
-```bash
-./venv/bin/notion-ai ask "1+1" --json
-./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
-./venv/bin/notion-ai ask --from-stdin --assign_task --json
-./venv/bin/notion-ai app ask "请只回复：OK" --json
-./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
-./venv/bin/notion-ai app ask --model "GPT-5.5" "Opus 4.8" "请只回复：OK" --json
-./venv/bin/notion-ai app get-reply --token <token-1> <token-2> --json
-./venv/bin/notion-ai app ask --token <token> "继续刚才的话题" --json
-./venv/bin/notion-ai app close-conversation --token <token> --json
-./venv/bin/notion-ai cdp-debug --status
-```
+## Housekeeping
 
-## 验证
+Ignored generated files:
 
-```bash
-./venv/bin/python -m compileall -q src
-./venv/bin/notion-ai --help
-./venv/bin/notion-ai ask --help
-./venv/bin/notion-ai cdp-debug --status
-./venv/bin/notion-ai ask "1+1" --json --timeout 60
-```
+- `venv/`
+- `__pycache__/`
+- `.DS_Store`
+- `*.pyc`
+- `*.egg-info/`
+- `.pytest_cache/`
+- `.claude/`

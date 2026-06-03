@@ -242,39 +242,43 @@ def wait_until_generation_finished_polling_cdp(question: str, timeout: float,
     deadline = time.time() + timeout
     last_key = None
     saw_question = False
-    saw_stop = False
+    saw_generation_activity = False
     last_status = None
 
     while time.time() < deadline:
         status = dom_status(port, QUICK_SEARCH_URL, body_limit=30000)
         last_status = status
         saw_question = saw_question or _body_contains_question(status, question)
-        saw_stop = saw_stop or bool(status.get("hasStop"))
+        saw_generation_activity = (
+            saw_generation_activity
+            or bool(status.get("hasStop"))
+            or bool(status.get("hasGeneratingText"))
+        )
         key = (
-            status.get("hasStop"),
-            status.get("hasGeneratingText"),
             status.get("copyReplyCount"),
-            bool(status.get("enabledSubmit")),
+            status.get("enabledCopyReplyCount"),
+            bool(status.get("latestEnabledCopyReply")),
+            status.get("hasGeneratingText"),
             saw_question,
-            saw_stop,
+            saw_generation_activity,
         )
         if key != last_key:
             _print(
                 "  CDP 状态: "
-                f"stop={'是' if status.get('hasStop') else '否'} | "
-                f"generating={'是' if status.get('hasGeneratingText') else '否'} | "
                 f"copy={status.get('copyReplyCount')} | "
-                f"question={'已出现' if saw_question else '未出现'}",
+                f"copyEnabled={status.get('enabledCopyReplyCount')} | "
+                f"generating={'是' if status.get('hasGeneratingText') else '否'} | "
+                f"question={'已出现' if saw_question else '未出现'} | "
+                f"started={'是' if saw_generation_activity else '否'}",
                 quiet,
             )
             last_key = key
 
         if (
             saw_question
-            and not status.get("hasStop")
+            and saw_generation_activity
             and not status.get("hasGeneratingText")
-            and status.get("copyReplyCount", 0) > 0
-            and (saw_stop or not status.get("enabledSubmit"))
+            and status.get("latestEnabledCopyReply")
         ):
             return {"success": True, "state": status, "error": None}
         time.sleep(0.35)

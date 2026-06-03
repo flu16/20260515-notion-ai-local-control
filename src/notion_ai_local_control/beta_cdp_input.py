@@ -25,7 +25,7 @@ from pathlib import Path
 DEFAULT_PORT = 9222
 NOTION_BUNDLE_ID = "notion.id"
 NOTION_EXECUTABLE = Path("/Applications/Notion.app/Contents/MacOS/Notion")
-QUICK_SEARCH_URL = "https://www.notion.so/quick-search"
+QUICK_SEARCH_URL = "https://app.notion.com/quick-search"
 QUICK_SEARCH_ALLOWED_HOSTS = {"www.notion.so", "app.notion.com"}
 QUICK_SEARCH_PATH = "/quick-search"
 TEXTBOX_SELECTOR = '[contenteditable="true"][role="textbox"]'
@@ -444,10 +444,14 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
   const buttons = [...document.querySelectorAll("button,[role='button']")]
     .map((button, index) => {{
       const rect = button.getBoundingClientRect();
+      const nativeDisabled = !!button.disabled;
+      const ariaDisabled = button.getAttribute("aria-disabled") === "true";
       return {{
         index,
         label: labelFor(button),
-        disabled: !!button.disabled || button.getAttribute("aria-disabled") === "true",
+        nativeDisabled,
+        ariaDisabled,
+        disabled: nativeDisabled || ariaDisabled,
         visible: rect.width > 0 && rect.height > 0,
         rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
       }};
@@ -474,8 +478,13 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
     !button.disabled && {json.dumps(list(SUBMIT_BUTTON_LABELS))}.includes(button.label)
   )) || null;
   const copyReplies = buttons.filter((button) => (
-    !button.disabled && {json.dumps(list(COPY_REPLY_LABELS))}.includes(button.label)
+    {json.dumps(list(COPY_REPLY_LABELS))}.includes(button.label)
   ));
+  const enabledCopyReplies = copyReplies.filter((button) => !button.nativeDisabled);
+  const latestCopyReply = [...copyReplies]
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
+  const latestEnabledCopyReply = [...enabledCopyReplies]
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
   return {{
     targetUrl: location.href,
     textboxes,
@@ -484,6 +493,9 @@ def dom_status(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL,
     hasGeneratingText,
     enabledSubmit,
     copyReplyCount: copyReplies.length,
+    enabledCopyReplyCount: enabledCopyReplies.length,
+    latestCopyReply,
+    latestEnabledCopyReply,
     bodyTextTail: bodyText.slice(-{int(body_limit)}),
   }};
 }})()
@@ -556,6 +568,7 @@ def _wait_for_generation_state_cdp(
   const startedAt = Date.now();
   let sawQuestion = false;
   let sawStop = false;
+  let sawGenerationActivity = false;
   let settled = false;
 
   const labelFor = (node) => (
@@ -571,15 +584,45 @@ def _wait_for_generation_state_cdp(
     const rect = node.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }};
+  const textNodeBottomFor = (compactNeedle, denseNeedle) => {{
+    if (!compactNeedle && !denseNeedle) return null;
+    const walker = document.createTreeWalker(
+      document.body || document.documentElement,
+      NodeFilter.SHOW_TEXT
+    );
+    let node;
+    while ((node = walker.nextNode())) {{
+      const raw = node.nodeValue || "";
+      const compactText = compact(raw);
+      const denseText = dense(raw);
+      if (
+        (compactNeedle && compactText.includes(compactNeedle)) ||
+        (denseNeedle && denseText.includes(denseNeedle))
+      ) {{
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const rect = range.getBoundingClientRect();
+        range.detach();
+        if (rect.width > 0 && rect.height > 0) return rect.bottom;
+      }}
+    }}
+    return null;
+  }};
   const snapshot = () => {{
     const buttons = [...document.querySelectorAll("button,[role='button']")]
       .map((button, index) => {{
         const label = labelFor(button);
+        const rect = button.getBoundingClientRect();
+        const nativeDisabled = !!button.disabled;
+        const ariaDisabled = button.getAttribute("aria-disabled") === "true";
         return {{
           index,
           label,
-          disabled: !!button.disabled || button.getAttribute("aria-disabled") === "true",
+          nativeDisabled,
+          ariaDisabled,
+          disabled: nativeDisabled || ariaDisabled,
           visible: visible(button),
+          rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
         }};
       }})
       .filter((button) => button.visible);
@@ -601,17 +644,26 @@ def _wait_for_generation_state_cdp(
         compactBody.includes(compactMarker) ||
         (!!denseMarker && dense(bodyText).includes(denseMarker));
     }}
+    const questionBottom = sawQuestion ? textNodeBottomFor(compactMarker, denseMarker) : null;
     const hasStop = buttons.some((button) => (
       !button.disabled && stopLabels.has(button.label)
     ));
     sawStop = sawStop || hasStop;
     const hasGeneratingText = /Notion AI\\s+正在生成回复|generating reply|is generating/i.test(bodyText);
+    sawGenerationActivity = sawGenerationActivity || hasStop || hasGeneratingText;
     const enabledSubmit = buttons.find((button) => (
       !button.disabled && submitLabels.has(button.label)
     )) || null;
-    const copyReplies = buttons.filter((button) => (
-      !button.disabled && copyLabels.has(button.label)
-    ));
+    const copyReplies = buttons.filter((button) => copyLabels.has(button.label));
+    const enabledCopyReplies = copyReplies.filter((button) => !button.nativeDisabled);
+    const latestCopyReply = [...copyReplies]
+      .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
+    const latestEnabledCopyReply = [...enabledCopyReplies]
+      .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
+    const enabledCopyRepliesAfterQuestion = questionBottom == null ? [] : enabledCopyReplies
+      .filter((button) => button.rect.y >= questionBottom - 1);
+    const latestEnabledCopyReplyAfterQuestion = [...enabledCopyRepliesAfterQuestion]
+      .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
     const visibleTextbox = textboxes.find((textbox) => textbox.visible) || null;
     return {{
       targetUrl: location.href,
@@ -622,8 +674,15 @@ def _wait_for_generation_state_cdp(
       hasGeneratingText,
       enabledSubmit,
       copyReplyCount: copyReplies.length,
+      enabledCopyReplyCount: enabledCopyReplies.length,
+      latestCopyReply,
+      latestEnabledCopyReply,
+      questionBottom,
+      enabledCopyReplyAfterQuestionCount: enabledCopyRepliesAfterQuestion.length,
+      latestEnabledCopyReplyAfterQuestion,
       sawQuestion,
       sawStop,
+      sawGenerationActivity,
       visibleTextboxText: visibleTextbox ? visibleTextbox.text : "",
       bodyTextTail: bodyText.slice(-6000),
     }};
@@ -648,10 +707,9 @@ def _wait_for_generation_state_cdp(
     if (
       mode === "finished" &&
       state.sawQuestion &&
-      !state.hasStop &&
+      state.sawGenerationActivity &&
       !state.hasGeneratingText &&
-      state.copyReplyCount > 0 &&
-      (state.sawStop || !state.enabledSubmit)
+      state.latestEnabledCopyReplyAfterQuestion
     ) {{
       done(true, state, null);
     }}
@@ -1524,8 +1582,71 @@ def submit_message(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dic
     return click_button_by_label(SUBMIT_BUTTON_LABELS, port, url, prefer_bottom=True)
 
 
+def copy_reply_via_react(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
+    """通过 React fiber 树调用父组件 onClick 来触发拷贝回复。
+
+    Notion 的"拷贝回复"按钮在生成完成后仍保持 aria-disabled="true"，
+    直接 click() 或 click_button_by_label 都无法触发。
+    需要绕过 aria-disabled guard，通过 React fiber 直接调用父组件的 onClick。
+    """
+    target = find_target(port, url)
+    expression = """
+(() => {
+  const labels = new Set(%s);
+  const matches = [...document.querySelectorAll('button, [role="button"]')]
+    .map((btn) => {
+      const rect = btn.getBoundingClientRect();
+      return {
+        node: btn,
+        aria: btn.getAttribute('aria-label') || '',
+        nativeDisabled: !!btn.disabled,
+        visible: rect.width > 0 && rect.height > 0,
+        rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
+      };
+    })
+    .filter((item) => item.visible && !item.nativeDisabled && labels.has(item.aria))
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x));
+  const match = matches[0] || null;
+  const el = match ? match.node : null;
+  if (!el) return {ok: false, error: "拷贝回复 button not found"};
+
+  const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+  if (!fiberKey) return {ok: false, error: "React fiber not found on button"};
+
+  // depth=1 的父 fiber 持有真正的 onClick handler
+  let fiber = el[fiberKey];
+  fiber = fiber.return;
+  if (!fiber || !fiber.memoizedProps || !fiber.memoizedProps.onClick) {
+    return {ok: false, error: "onClick handler not found on parent fiber"};
+  }
+
+  const mockEvent = {
+    preventDefault: () => {},
+    stopPropagation: () => {},
+    target: el,
+    currentTarget: fiber.stateNode,
+    type: 'click',
+    isTrusted: false,
+  };
+  fiber.memoizedProps.onClick(mockEvent);
+  return {
+    ok: true,
+    label: el.getAttribute('aria-label'),
+    nativeDisabled: match.nativeDisabled,
+    rect: match.rect,
+    method: 'react-fiber-onClick',
+  };
+})()
+""" % json.dumps(list(COPY_REPLY_LABELS))
+    result = evaluate_js(target, expression)
+    if isinstance(result, dict):
+        return result
+    return {"ok": False, "error": f"Unexpected result: {result}"}
+
+
 def copy_reply(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
-    return click_button_by_label(COPY_REPLY_LABELS, port, url, prefer_bottom=True)
+    """拷贝回复 — 使用 React fiber onClick 绕过 aria-disabled guard。"""
+    return copy_reply_via_react(port, url)
 
 
 def start_new_conversation_cdp(port: int = DEFAULT_PORT,

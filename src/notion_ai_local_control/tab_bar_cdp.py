@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import subprocess
 import sys
@@ -22,6 +24,18 @@ NOTION_AI_URL_PREFIXES = (
     "https://app.notion.com/chat",
     "https://www.notion.so/chat",
 )
+
+
+@contextlib.contextmanager
+def new_conversation_lock(port: int = DEFAULT_PORT):
+    """Serialize new Notion AI conversation creation across local processes."""
+    lock_path = f"/tmp/notion-ai-local-control-new-tab-{port}.lock"
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def page_targets(port: int = DEFAULT_PORT) -> list[dict]:
@@ -144,6 +158,16 @@ def _target_from_new_tab_result(new_tab: dict, port: int = DEFAULT_PORT) -> dict
     if not new_target_id:
         return None
     return find_page_target_by_id(new_target_id, port)
+
+
+def navigate_target(target: dict, url: str) -> dict:
+    ws_url = target.get("webSocketDebuggerUrl")
+    if not ws_url:
+        return {"ok": False, "error": "target has no WebSocket URL", "target": target_summary(target)}
+    session = CdpSession(ws_url)
+    with session:
+        result = session.call("Page.navigate", {"url": url})
+    return {"ok": True, "targetId": target.get("id"), "url": url, "result": result}
 
 
 def _create_ai_target(port: int = DEFAULT_PORT, timeout: float = 10.0) -> tuple[dict | None, dict]:
@@ -427,12 +451,16 @@ def main_app_status(target: dict) -> dict:
   const buttons = [...document.querySelectorAll("button,[role='button']")]
     .map((node, index) => {
       const rect = node.getBoundingClientRect();
+      const nativeDisabled = !!node.disabled;
+      const ariaDisabled = node.getAttribute("aria-disabled") === "true";
       return {
         index,
         label: labelFor(node),
         ariaLabel: node.getAttribute("aria-label"),
         dataTestid: node.getAttribute("data-testid"),
-        disabled: !!node.disabled || node.getAttribute("aria-disabled") === "true",
+        nativeDisabled,
+        ariaDisabled,
+        disabled: nativeDisabled || ariaDisabled,
         visible: rect.width > 0 && rect.height > 0,
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
@@ -453,8 +481,13 @@ def main_app_status(target: dict) -> dict:
     .filter((item) => item.visible);
   const bodyText = document.body ? document.body.textContent || "" : "";
   const copyReplies = buttons.filter((button) => (
-    !button.disabled && (button.label === "拷贝回复" || button.label === "Copy reply")
+    button.label === "拷贝回复" || button.label === "Copy reply"
   ));
+  const enabledCopyReplies = copyReplies.filter((button) => !button.nativeDisabled);
+  const latestCopyReply = [...copyReplies]
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
+  const latestEnabledCopyReply = [...enabledCopyReplies]
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
   const hasStop = buttons.some((button) => (
     !button.disabled && (button.label === "停止 AI 消息" || button.label === "Stop AI message")
   ));
@@ -475,6 +508,9 @@ def main_app_status(target: dict) -> dict:
     hasGeneratingText,
     enabledSubmit,
     copyReplyCount: copyReplies.length,
+    enabledCopyReplyCount: enabledCopyReplies.length,
+    latestCopyReply,
+    latestEnabledCopyReply,
     bodyTextTail: bodyText.slice(-8000),
   };
 })()
@@ -823,7 +859,12 @@ def _click_main_app_submit(session: CdpSession) -> dict:
     return {"ok": False, "error": "submit click returned no result"}
 
 
-def set_main_app_text_and_submit(target: dict, text: str, model: str | None = None) -> dict:
+def set_main_app_text_and_submit(
+    target: dict,
+    text: str,
+    model: str | None = None,
+    require_empty: bool = False,
+) -> dict:
     with CdpSession(target["webSocketDebuggerUrl"]) as session:
         model_selection = None
         current_model = None
@@ -841,6 +882,14 @@ def set_main_app_text_and_submit(target: dict, text: str, model: str | None = No
         focused = _focus_main_app_textbox(session)
         if not focused.get("ok"):
             return focused
+        existing_text = focused.get("text") or ""
+        if require_empty and existing_text.strip():
+            return {
+                "ok": False,
+                "error": "target textbox is not empty; refusing to merge prompts",
+                "existingText": existing_text,
+                "targetId": target.get("id"),
+            }
         _clear_focused_textbox(session)
         session.call("Input.insertText", {"text": text})
         state = None
@@ -898,9 +947,15 @@ def wait_main_app_generation_finished(
     compact_marker, dense_marker = _question_markers(question)
     deadline = time.monotonic() + timeout
     last_status = None
+    saw_generation_activity = False
     while time.monotonic() < deadline:
         status = main_app_status(target)
         last_status = status
+        saw_generation_activity = (
+            saw_generation_activity
+            or bool(status.get("hasStop"))
+            or bool(status.get("hasGeneratingText"))
+        )
         body = status.get("bodyTextTail") or ""
         compact_body = " ".join(body.split())
         dense_body = "".join(body.split())
@@ -910,9 +965,9 @@ def wait_main_app_generation_finished(
         )
         if (
             saw_question
-            and not status.get("hasStop")
+            and saw_generation_activity
             and not status.get("hasGeneratingText")
-            and status.get("copyReplyCount", 0) > before_copy_count
+            and status.get("latestEnabledCopyReply")
         ):
             return {"success": True, "state": status, "error": None}
         time.sleep(max(interval, 0.05))
@@ -925,62 +980,70 @@ def wait_main_app_generation_finished(
 
 def copy_main_app_latest_reply(target: dict, timeout: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout
-    last_clicked = None
+    clicked = None
     while time.monotonic() < deadline:
         expression = """
 (() => {
-  const labelFor = (node) => (
-    node.textContent ||
-    node.getAttribute("aria-label") ||
-    node.getAttribute("data-testid") ||
-    node.getAttribute("title") ||
-    ""
-  ).trim();
-  const matches = [...document.querySelectorAll("button,[role='button']")]
-    .map((node, index) => {
-      const rect = node.getBoundingClientRect();
+  const labels = ["拷贝回复", "Copy reply"];
+  const buttons = [...document.querySelectorAll('button, [role="button"]')]
+    .map((btn) => {
+      const rect = btn.getBoundingClientRect();
       return {
-        node,
-        index,
-        label: labelFor(node),
-        disabled: !!node.disabled || node.getAttribute("aria-disabled") === "true",
+        node: btn,
+        aria: btn.getAttribute('aria-label') || '',
+        nativeDisabled: !!btn.disabled,
         visible: rect.width > 0 && rect.height > 0,
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
-    })
-    .filter((item) => (
-      item.visible &&
-      !item.disabled &&
-      (item.label === "拷贝回复" || item.label === "Copy reply")
-    ))
-    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x));
-  if (!matches.length) return { ok: false, error: "copy reply button not found" };
-  const selected = matches[0];
-  selected.node.click();
+    });
+  const match = buttons
+    .filter((item) => item.visible && !item.nativeDisabled && labels.includes(item.aria))
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x))[0] || null;
+  const el = match ? match.node : null;
+  if (!el) return { ok: false, error: "copy reply button not found" };
+
+  const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+  if (!fiberKey) return { ok: false, error: "React fiber not found on button" };
+
+  let fiber = el[fiberKey];
+  fiber = fiber.return;
+  if (!fiber || !fiber.memoizedProps || !fiber.memoizedProps.onClick) {
+    return { ok: false, error: "onClick handler not found on parent fiber" };
+  }
+
+  const mockEvent = {
+    preventDefault: () => {},
+    stopPropagation: () => {},
+    target: el,
+    currentTarget: fiber.stateNode,
+    type: 'click',
+    isTrusted: false,
+  };
+  fiber.memoizedProps.onClick(mockEvent);
   return {
     ok: true,
-    index: selected.index,
-    label: selected.label,
-    rect: selected.rect,
+    label: el.getAttribute('aria-label'),
+    nativeDisabled: match.nativeDisabled,
+    rect: match.rect,
   };
 })()
 """
         clicked = evaluate_js(target, expression)
-        last_clicked = clicked
         if isinstance(clicked, dict) and clicked.get("ok"):
-            time.sleep(0.3)
-            text = get_clipboard_text().strip()
-            if text:
-                return {"success": True, "text": text, "copy_button_info": clicked, "error": None}
+            # 拷贝是异步的，重试几次等剪贴板更新
+            for _ in range(5):
+                time.sleep(0.3)
+                text = get_clipboard_text().strip()
+                if text:
+                    return {"success": True, "text": text, "copy_button_info": clicked, "error": None}
+            # 剪贴板仍空 — 下一轮循环重新 click
         time.sleep(0.2)
     return {
         "success": False,
         "text": "",
-        "copy_button_info": last_clicked,
+        "copy_button_info": clicked,
         "error": "copy reply timed out or clipboard was empty",
     }
-
-
 def _model_from_submission(submitted: dict, fallback_status: dict | None = None) -> str | None:
     if isinstance(submitted, dict) and submitted.get("currentModel"):
         return submitted.get("currentModel")
@@ -995,6 +1058,35 @@ def _model_from_submission(submitted: dict, fallback_status: dict | None = None)
 
 
 def ask_and_reply_main_app_target(
+    question: str = "",
+    *,
+    token: str | None = None,
+    model: str | None = None,
+    port: int = DEFAULT_PORT,
+    timeout: float = 300.0,
+    token_timeout: float = 10.0,
+) -> dict:
+    if not token:
+        with new_conversation_lock(port):
+            return _ask_and_reply_main_app_target_unlocked(
+                question=question,
+                token=token,
+                model=model,
+                port=port,
+                timeout=timeout,
+                token_timeout=token_timeout,
+            )
+    return _ask_and_reply_main_app_target_unlocked(
+        question=question,
+        token=token,
+        model=model,
+        port=port,
+        timeout=timeout,
+        token_timeout=token_timeout,
+    )
+
+
+def _ask_and_reply_main_app_target_unlocked(
     question: str = "",
     *,
     token: str | None = None,
@@ -1022,7 +1114,12 @@ def ask_and_reply_main_app_target(
         }
     activation = foreground_target(target, port=port)
     before_status = main_app_status(target)
-    submitted = set_main_app_text_and_submit(target, question, model=model)
+    submitted = set_main_app_text_and_submit(
+        target,
+        question,
+        model=model,
+        require_empty=not bool(token),
+    )
     if not submitted.get("ok"):
         return {
             "success": False,
@@ -1113,6 +1210,32 @@ def ask_main_app_target(
     token_timeout: float = 10.0,
 ) -> dict:
     """Submit a question to a Notion AI conversation and return immediately."""
+    if not token:
+        with new_conversation_lock(port):
+            return _ask_main_app_target_unlocked(
+                question=question,
+                token=token,
+                model=model,
+                port=port,
+                token_timeout=token_timeout,
+            )
+    return _ask_main_app_target_unlocked(
+        question=question,
+        token=token,
+        model=model,
+        port=port,
+        token_timeout=token_timeout,
+    )
+
+
+def _ask_main_app_target_unlocked(
+    question: str = "",
+    *,
+    token: str | None = None,
+    model: str | None = None,
+    port: int = DEFAULT_PORT,
+    token_timeout: float = 10.0,
+) -> dict:
     started_at = time.time()
     target, new_tab = _resolve_or_create_ai_target(token=token, port=port)
     if not target:
@@ -1130,7 +1253,12 @@ def ask_main_app_target(
             "target": target_summary(target),
         }
     activation = foreground_target(target, port=port)
-    submitted = set_main_app_text_and_submit(target, question, model=model)
+    submitted = set_main_app_text_and_submit(
+        target,
+        question,
+        model=model,
+        require_empty=not bool(token),
+    )
     if not submitted.get("ok"):
         return {
             "success": False,
@@ -1223,24 +1351,18 @@ def reply_main_app_target(
             "activation": activation,
         }
     status = main_app_status(target)
-    if status.get("hasStop") or status.get("hasGeneratingText"):
+    # 等待最新回复的拷贝按钮可用（生成完成信号）
+    if not status.get("latestEnabledCopyReply"):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             status = main_app_status(target)
-            if not status.get("hasStop") and not status.get("hasGeneratingText"):
+            if (
+                not status.get("hasGeneratingText")
+                and status.get("latestEnabledCopyReply")
+            ):
                 break
             time.sleep(0.5)
-    if status.get("hasStop") or status.get("hasGeneratingText"):
-        return {
-            "success": False,
-            "step": "wait_finished",
-            "error": f"still generating after {timeout:.0f}s",
-            "target": target_summary(target),
-            "activation": activation,
-            "status": status,
-        }
-    copy_count = status.get("copyReplyCount", 0)
-    if copy_count <= 0:
+    if not status.get("latestEnabledCopyReply"):
         return {
             "success": False,
             "step": "no_reply",
@@ -1288,10 +1410,11 @@ def reply_all_main_app(port: int = DEFAULT_PORT) -> dict:
             "hasStop": status.get("hasStop"),
             "hasGeneratingText": status.get("hasGeneratingText"),
             "copyReplyCount": status.get("copyReplyCount", 0),
+            "enabledCopyReplyCount": status.get("enabledCopyReplyCount", 0),
         }
         if status.get("hasStop") or status.get("hasGeneratingText"):
             tab_info["state"] = "generating"
-        elif status.get("copyReplyCount", 0) > 0:
+        elif status.get("latestEnabledCopyReply"):
             tab_info["state"] = "idle"
         else:
             tab_info["state"] = "empty"
@@ -1581,6 +1704,8 @@ def create_new_conversation_tab(
     deadline = time.monotonic() + max(timeout, 0)
     last_targets = before_targets
     last_tab_bar = before_tab_bar
+    navigated_blank_target_id = None
+    navigate_result = None
     while True:
         current_targets = page_targets(port)
         current_ids = {target.get("id") for target in current_targets}
@@ -1601,6 +1726,7 @@ def create_new_conversation_tab(
                 "newTarget": target_summary(selected),
                 "newAiTargets": [target_summary(target) for target in new_ai_targets],
                 "newTargets": [target_summary(target) for target in new_targets],
+                "navigateResult": navigate_result,
                 "beforeTabBar": {
                     "conversationTabCount": before_tab_bar.get("conversationTabCount"),
                     "bodyText": before_tab_bar.get("bodyText"),
@@ -1610,6 +1736,18 @@ def create_new_conversation_tab(
                     "bodyText": last_tab_bar.get("bodyText"),
                 },
             }
+
+        blank_targets = [
+            target
+            for target in new_targets
+            if target.get("webSocketDebuggerUrl")
+            and target.get("id")
+            and target.get("id") != navigated_blank_target_id
+        ]
+        if blank_targets:
+            selected_blank = blank_targets[0]
+            navigated_blank_target_id = selected_blank.get("id")
+            navigate_result = navigate_target(selected_blank, "https://app.notion.com/ai")
 
         if time.monotonic() >= deadline:
             return {
