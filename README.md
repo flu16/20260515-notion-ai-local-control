@@ -49,23 +49,26 @@ CDP 调试命令：
 ./venv/bin/notion-ai cdp-debug --status
 ```
 
-通过 Notion 桌面端 Tab Bar 创建新的主 app Notion AI 对话标签：
+通过 Notion 桌面端主 app 创建新 Notion AI 对话并返回 conversation token：
 
 ```bash
-./venv/bin/notion-ai app new-conversation --json
+./venv/bin/notion-ai app ask "请只回复：OK" --json
+./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
 ```
 
-关闭指定主 app Notion AI 对话标签时必须提供 CDP target id：
+继续指定主 app Notion AI 对话时只需要 conversation token：
 
 ```bash
-./venv/bin/notion-ai app tab-bar-state --json
-./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
+./venv/bin/notion-ai app ask --token <token> "继续刚才的话题" --json
+./venv/bin/notion-ai app ask --token <token> --model "Opus 4.8" "换模型继续" --json
+./venv/bin/notion-ai app get-reply --token <token> --json
+./venv/bin/notion-ai app get-reply --token <token-1> <token-2> <token-3> --json
 ```
 
-在指定主 app Notion AI 对话里提问并复制回复：
+关闭指定主 app Notion AI 对话标签：
 
 ```bash
-./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
+./venv/bin/notion-ai app close-conversation --token <token> --json
 ```
 
 ## 能力边界
@@ -99,7 +102,8 @@ CDP 调试命令：
 ./venv/bin/notion-ai ask --help
 ./venv/bin/notion-ai cdp-debug --status
 ./venv/bin/notion-ai app tab-bar-state --json
-./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
-./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
+./venv/bin/notion-ai app ask "请只回复：OK" --json
+./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
+./venv/bin/notion-ai app get-reply --token <token> --json
 ./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```

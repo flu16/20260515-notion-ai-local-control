@@ -40,7 +40,7 @@ def print_help() -> None:
     print("常用示例:")
     print('  notion-ai ask "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
-    print("  notion-ai app new-conversation --json")
+    print('  notion-ai app ask "请只回复：OK" --json')
     print()
     print("调试示例:")
     print("  notion-ai cdp-debug --status")

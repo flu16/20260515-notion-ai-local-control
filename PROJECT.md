@@ -103,10 +103,13 @@ CDP 底层能力：
 主 app Tab Bar 控制能力：
 
 - 发现 Notion 桌面端 `Tab Bar` CDP target
-- 读取当前主 app 对话标签数量和对应 CDP target id
-- 点击 `新选项卡` 创建新的主 app Notion AI 对话，并返回新 target id
-- 按 CDP target id 关闭指定主 app 对话标签
-- 按 CDP target id 在指定主 app Notion AI 对话中提问、等待完成并复制回复
+- 读取当前主 app 对话标签数量和 conversation token
+- `app ask` 无 token 时自动创建新的主 app Notion AI 对话、提交问题并返回 token
+- `app ask --model` 可在提交前按可见模型名称选择模型
+- `app ask --model A B C` 可打开多个新对话，用多个模型问同一个问题
+- `app get-reply --token A B C` 可按多个 token 逐个获取回复
+- 按 conversation token 关闭指定主 app 对话标签
+- 按 conversation token 在指定主 app Notion AI 对话中提问、等待完成并复制回复
 
 ## 常用命令
 
@@ -114,9 +117,12 @@ CDP 底层能力：
 ./venv/bin/notion-ai ask "1+1" --json
 ./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
 ./venv/bin/notion-ai ask --from-stdin --assign_task --json
-./venv/bin/notion-ai app new-conversation --json
-./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
-./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
+./venv/bin/notion-ai app ask "请只回复：OK" --json
+./venv/bin/notion-ai app ask --model "GPT-5.5" "请只回复：OK" --json
+./venv/bin/notion-ai app ask --model "GPT-5.5" "Opus 4.8" "请只回复：OK" --json
+./venv/bin/notion-ai app get-reply --token <token-1> <token-2> --json
+./venv/bin/notion-ai app ask --token <token> "继续刚才的话题" --json
+./venv/bin/notion-ai app close-conversation --token <token> --json
 ./venv/bin/notion-ai cdp-debug --status
 ```
 
