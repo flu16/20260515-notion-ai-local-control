@@ -13,6 +13,11 @@ COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Ask Notion AI through Electron CDP and copy the final reply.",
     ),
+    "app": (
+        "notion_ai_local_control.tab_bar_cdp",
+        "main",
+        "Control Notion desktop main-app tabs through Electron CDP.",
+    ),
 }
 
 DEBUG_COMMANDS: dict[str, tuple[str, str, str]] = {
@@ -35,6 +40,7 @@ def print_help() -> None:
     print("常用示例:")
     print('  notion-ai ask "1+1" --json')
     print("  notion-ai ask --from-stdin --json")
+    print("  notion-ai app new-conversation --json")
     print()
     print("调试示例:")
     print("  notion-ai cdp-debug --status")

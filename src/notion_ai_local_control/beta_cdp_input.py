@@ -714,8 +714,8 @@ def wait_for_textbox(
         time.sleep(max(interval, 0.05))
 
 
-def write_text(text: str, port: int = DEFAULT_PORT,
-               url: str = QUICK_SEARCH_URL) -> dict:
+def _write_text_dom(text: str, port: int = DEFAULT_PORT,
+                    url: str = QUICK_SEARCH_URL) -> dict:
     target = find_target(port, url)
     expression = f"""
 (() => {{
@@ -777,7 +777,7 @@ def write_text(text: str, port: int = DEFAULT_PORT,
     return evaluate_js(target, expression)
 
 
-def clear_text(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
+def _clear_text_dom(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
     target = find_target(port, url)
     expression = f"""
 (() => {{
@@ -810,8 +810,8 @@ def clear_text(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
     return evaluate_js(target, expression)
 
 
-def set_text_and_submit(text: str, port: int = DEFAULT_PORT,
-                        url: str = QUICK_SEARCH_URL) -> dict:
+def _set_text_and_submit_dom(text: str, port: int = DEFAULT_PORT,
+                             url: str = QUICK_SEARCH_URL) -> dict:
     target = find_target(port, url)
     expression = f"""
 (() => {{
@@ -923,6 +923,252 @@ def set_text_and_submit(text: str, port: int = DEFAULT_PORT,
 }})()
 """
     return evaluate_js(target, expression)
+
+
+def _runtime_value(session: CdpSession, expression: str, timeout: float | None = None):
+    result = session.call(
+        "Runtime.evaluate",
+        {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        },
+        timeout=timeout,
+    )
+    return result.get("result", {}).get("value")
+
+
+def _focus_and_select_textbox_input(session: CdpSession) -> dict:
+    expression = f"""
+(() => {{
+  const textboxSelector = {json.dumps(TEXTBOX_SELECTOR)};
+  const el = document.querySelector(textboxSelector);
+  if (!el) return {{ ok: false, error: "textbox not found" }};
+  el.focus();
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return {{
+    ok: true,
+    text: el.textContent || "",
+    active: document.activeElement === el,
+  }};
+}})()
+"""
+    result = _runtime_value(session, expression)
+    if isinstance(result, dict):
+        return result
+    return {"ok": False, "error": "focus textbox returned no result"}
+
+
+def _textbox_and_submit_state_input(session: CdpSession) -> dict:
+    expression = f"""
+(() => {{
+  const textboxSelector = {json.dumps(TEXTBOX_SELECTOR)};
+  const submitLabels = new Set({json.dumps(list(SUBMIT_BUTTON_LABELS))});
+  const labelFor = (node) => (
+    node.textContent ||
+    node.getAttribute("aria-label") ||
+    node.getAttribute("data-testid") ||
+    node.getAttribute("title") ||
+    ""
+  ).trim();
+  const textbox = document.querySelector(textboxSelector);
+  const submit = [...document.querySelectorAll("button,[role='button']")]
+    .map((node, index) => {{
+      const rect = node.getBoundingClientRect();
+      return {{
+        node,
+        index,
+        label: labelFor(node),
+        disabled: !!node.disabled || node.getAttribute("aria-disabled") === "true",
+        visible: rect.width > 0 && rect.height > 0,
+        rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
+      }};
+    }})
+    .find((item) => item.visible && submitLabels.has(item.label)) || null;
+  return {{
+    text: textbox ? textbox.textContent || "" : null,
+    active: textbox ? document.activeElement === textbox : false,
+    submit: submit ? {{
+      index: submit.index,
+      label: submit.label,
+      disabled: submit.disabled,
+      visible: submit.visible,
+      rect: submit.rect,
+    }} : null,
+  }};
+}})()
+"""
+    result = _runtime_value(session, expression)
+    return result if isinstance(result, dict) else {"text": None, "submit": None}
+
+
+def _click_submit_input(session: CdpSession) -> dict:
+    expression = f"""
+(() => {{
+  const submitLabels = new Set({json.dumps(list(SUBMIT_BUTTON_LABELS))});
+  const labelFor = (node) => (
+    node.textContent ||
+    node.getAttribute("aria-label") ||
+    node.getAttribute("data-testid") ||
+    node.getAttribute("title") ||
+    ""
+  ).trim();
+  const matches = [...document.querySelectorAll("button,[role='button']")]
+    .map((node, index) => {{
+      const rect = node.getBoundingClientRect();
+      return {{
+        node,
+        index,
+        label: labelFor(node),
+        disabled: !!node.disabled || node.getAttribute("aria-disabled") === "true",
+        visible: rect.width > 0 && rect.height > 0,
+        rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
+      }};
+    }})
+    .filter((item) => item.visible && !item.disabled && submitLabels.has(item.label))
+    .sort((a, b) => (b.rect.y - a.rect.y) || (b.rect.x - a.rect.x));
+  if (!matches.length) {{
+    return {{ ok: false, error: "enabled submit button not found" }};
+  }}
+  const selected = matches[0];
+  selected.node.click();
+  return {{
+    ok: true,
+    submitted: {{
+      index: selected.index,
+      label: selected.label,
+      rect: selected.rect,
+    }},
+  }};
+}})()
+"""
+    result = _runtime_value(session, expression)
+    if isinstance(result, dict):
+        return result
+    return {"ok": False, "error": "submit click returned no result"}
+
+
+def _clear_focused_textbox_input(session: CdpSession) -> None:
+    session.call(
+        "Input.dispatchKeyEvent",
+        {
+            "type": "keyDown",
+            "key": "Backspace",
+            "code": "Backspace",
+            "windowsVirtualKeyCode": 8,
+            "nativeVirtualKeyCode": 8,
+        },
+    )
+    session.call(
+        "Input.dispatchKeyEvent",
+        {
+            "type": "keyUp",
+            "key": "Backspace",
+            "code": "Backspace",
+            "windowsVirtualKeyCode": 8,
+            "nativeVirtualKeyCode": 8,
+        },
+    )
+
+
+def write_text(text: str, port: int = DEFAULT_PORT,
+               url: str = QUICK_SEARCH_URL) -> dict:
+    target = find_target(port, url)
+    try:
+        with CdpSession(target["webSocketDebuggerUrl"]) as session:
+            focused = _focus_and_select_textbox_input(session)
+            if not focused.get("ok"):
+                return focused
+            _clear_focused_textbox_input(session)
+            session.call("Input.insertText", {"text": text})
+            state = _textbox_and_submit_state_input(session)
+            return {
+                "ok": True,
+                "inputMethod": "Input.insertText",
+                "text": state.get("text"),
+                "active": state.get("active"),
+                "submit": state.get("submit"),
+            }
+    except CdpError as exc:
+        fallback = _write_text_dom(text, port, url)
+        fallback["inputMethod"] = "execCommand"
+        fallback["inputFallbackError"] = str(exc)
+        return fallback
+
+
+def clear_text(port: int = DEFAULT_PORT, url: str = QUICK_SEARCH_URL) -> dict:
+    target = find_target(port, url)
+    try:
+        with CdpSession(target["webSocketDebuggerUrl"]) as session:
+            focused = _focus_and_select_textbox_input(session)
+            if not focused.get("ok"):
+                return focused
+            _clear_focused_textbox_input(session)
+            state = _textbox_and_submit_state_input(session)
+            return {
+                "ok": True,
+                "inputMethod": "Input.dispatchKeyEvent",
+                "text": state.get("text") or "",
+            }
+    except CdpError as exc:
+        fallback = _clear_text_dom(port, url)
+        fallback["inputMethod"] = "execCommand"
+        fallback["inputFallbackError"] = str(exc)
+        return fallback
+
+
+def set_text_and_submit(text: str, port: int = DEFAULT_PORT,
+                        url: str = QUICK_SEARCH_URL) -> dict:
+    target = find_target(port, url)
+    try:
+        with CdpSession(target["webSocketDebuggerUrl"]) as session:
+            focused = _focus_and_select_textbox_input(session)
+            if not focused.get("ok"):
+                return focused
+            _clear_focused_textbox_input(session)
+            session.call("Input.insertText", {"text": text})
+
+            state = None
+            for _ in range(40):
+                state = _textbox_and_submit_state_input(session)
+                submit = state.get("submit") if isinstance(state, dict) else None
+                if submit and not submit.get("disabled"):
+                    break
+                time.sleep(0.05)
+            else:
+                return {
+                    "ok": False,
+                    "error": "submit button not found or disabled",
+                    "inputMethod": "Input.insertText",
+                    "text": state.get("text") if isinstance(state, dict) else None,
+                    "submit": state.get("submit") if isinstance(state, dict) else None,
+                }
+
+            clicked = _click_submit_input(session)
+            if not clicked.get("ok"):
+                return {
+                    "ok": False,
+                    "error": clicked.get("error"),
+                    "inputMethod": "Input.insertText",
+                    "text": state.get("text") if isinstance(state, dict) else None,
+                    "submit": state.get("submit") if isinstance(state, dict) else None,
+                }
+            return {
+                "ok": True,
+                "inputMethod": "Input.insertText",
+                "text": state.get("text") if isinstance(state, dict) else text,
+                "active": state.get("active") if isinstance(state, dict) else None,
+                "submitted": clicked.get("submitted"),
+            }
+    except CdpError as exc:
+        fallback = _set_text_and_submit_dom(text, port, url)
+        fallback["inputMethod"] = "execCommand"
+        fallback["inputFallbackError"] = str(exc)
+        return fallback
 
 
 def normalize_attachment_paths(file_paths: list[str]) -> tuple[list[str], str | None]:

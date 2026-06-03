@@ -49,6 +49,25 @@ CDP 调试命令：
 ./venv/bin/notion-ai cdp-debug --status
 ```
 
+通过 Notion 桌面端 Tab Bar 创建新的主 app Notion AI 对话标签：
+
+```bash
+./venv/bin/notion-ai app new-conversation --json
+```
+
+关闭指定主 app Notion AI 对话标签时必须提供 CDP target id：
+
+```bash
+./venv/bin/notion-ai app tab-bar-state --json
+./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
+```
+
+在指定主 app Notion AI 对话里提问并复制回复：
+
+```bash
+./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
+```
+
 ## 能力边界
 
 - 只保留 CDP 路线，不再包含 macOS Accessibility legacy 代码。
@@ -68,6 +87,7 @@ CDP 调试命令：
     ├── __init__.py
     ├── cli.py              # notion-ai 统一入口
     ├── ask_cdp.py          # ask 的 CDP 提问流程
+    ├── tab_bar_cdp.py      # 主 app Tab Bar 控制
     └── beta_cdp_input.py   # CDP target、DOM 输入、提交、附件与复制底层能力
 ```
 
@@ -78,5 +98,8 @@ CDP 调试命令：
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai ask --help
 ./venv/bin/notion-ai cdp-debug --status
+./venv/bin/notion-ai app tab-bar-state --json
+./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
+./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
 ./venv/bin/notion-ai ask "1+1" --json --timeout 60
 ```

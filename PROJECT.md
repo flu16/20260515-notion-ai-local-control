@@ -73,6 +73,7 @@
 统一 CLI 入口。当前命令：
 
 - `ask`
+- `app`
 - `cdp-debug`
 
 ### `src/notion_ai_local_control/ask_cdp.py`
@@ -97,12 +98,25 @@ CDP 底层能力：
 - 文件上传
 - 等待生成状态
 
+### `src/notion_ai_local_control/tab_bar_cdp.py`
+
+主 app Tab Bar 控制能力：
+
+- 发现 Notion 桌面端 `Tab Bar` CDP target
+- 读取当前主 app 对话标签数量和对应 CDP target id
+- 点击 `新选项卡` 创建新的主 app Notion AI 对话，并返回新 target id
+- 按 CDP target id 关闭指定主 app 对话标签
+- 按 CDP target id 在指定主 app Notion AI 对话中提问、等待完成并复制回复
+
 ## 常用命令
 
 ```bash
 ./venv/bin/notion-ai ask "1+1" --json
 ./venv/bin/notion-ai ask "继续刚才的话题" --continue_conversation --json
 ./venv/bin/notion-ai ask --from-stdin --assign_task --json
+./venv/bin/notion-ai app new-conversation --json
+./venv/bin/notion-ai app close-conversation --target-id <target-id> --json
+./venv/bin/notion-ai app ask --target-id <target-id> "请只回复：OK" --json
 ./venv/bin/notion-ai cdp-debug --status
 ```
 
