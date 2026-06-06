@@ -29,7 +29,7 @@ Tab Bar is an Electron internal renderer. It can be stale or slow to hydrate, so
 
 `hasStop` is not enough. The stop button can remain visible after the answer is effectively complete.
 
-`copyReplyCount > 0` is also not enough. An old reply's copy button can remain while the current answer is still streaming. This caused `notion-ai ask_and_reply` to return old clipboard text such as `HANDOFF_OK` while a new long story was still generating.
+`copyReplyCount > 0` is also not enough. An old reply's copy button can remain while the current answer is still streaming. This caused `notion-ai ask-and-reply` to return old clipboard text such as `HANDOFF_OK` while a new long story was still generating.
 
 ### Current Quick-Search Rule
 
@@ -116,7 +116,7 @@ Therefore direct navigation is valid only after verifying the target reaches an 
 
 ## Multi-Token Reply
 
-`notion-ai app get_reply --token A B C --json` works.
+`notion-ai app get-reply --token A B C --json` works.
 
 Verified multi-token collection:
 
@@ -164,9 +164,9 @@ This successfully closed all main-app Notion AI page targets during testing.
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli start --json
 PYTHONPATH=src ./venv/bin/python -m compileall -q src
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli cdp-debug --status
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask_and_reply "请只回复：FIX_OK" --json --timeout 60
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask-and-reply "请只回复：FIX_OK" --json --timeout 60
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli app ask "只回复：LOCK6_A" --json
-PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli app get_reply --token <token-1> <token-2> --json
+PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli app get-reply --token <token-1> <token-2> --json
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli app status --all --json
 ```
 

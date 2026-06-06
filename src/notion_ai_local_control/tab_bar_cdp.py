@@ -1950,7 +1950,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     get_reply = subparsers.add_parser(
         "get-reply",
-        aliases=["get_reply"],
         help="Copy replies from Notion AI conversations.",
     )
     get_reply.add_argument("--token", nargs="+", help="Conversation token(s) to get replies from")
@@ -2072,7 +2071,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.timeout,
                 token_timeout=args.token_timeout,
             )
-        elif args.command in ("get-reply", "get_reply"):
+        elif args.command == "get-reply":
             if args.all:
                 result = reply_all_main_app(port=args.port)
             else:
@@ -2140,7 +2139,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(result.get("conversationToken") or "")
         elif args.command == "ask-and-reply":
             print(result.get("text", ""))
-        elif args.command in ("get-reply", "get_reply"):
+        elif args.command == "get-reply":
             if isinstance(result.get("results"), list):
                 for item in result["results"]:
                     token = item.get("conversationToken") or "-"

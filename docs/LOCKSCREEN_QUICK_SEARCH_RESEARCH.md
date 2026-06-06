@@ -71,7 +71,7 @@ CDP_ATTACH_RETEST_OK
 命令形态：
 
 ```bash
-notion-ai ask-cdp "请只回复：CDP_NEW_CHAT_OK" --new_conversation --timeout 90 --json
+notion-ai ask-cdp "请只回复：CDP_NEW_CHAT_OK" --new-conversation --timeout 90 --json
 ```
 
 结果：

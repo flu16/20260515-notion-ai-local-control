@@ -13,7 +13,7 @@ COMMON_COMMANDS: dict[str, tuple[str, str, str]] = {
         "main",
         "Start Notion desktop with Electron CDP enabled.",
     ),
-    "ask_and_reply": (
+    "ask-and-reply": (
         "notion_ai_local_control.ask_cdp",
         "main",
         "Ask Notion AI through Electron CDP and copy the final reply.",
@@ -44,8 +44,8 @@ def print_help() -> None:
     print()
     print("常用示例:")
     print("  notion-ai start --json")
-    print('  notion-ai ask_and_reply "1+1" --json')
-    print("  notion-ai ask_and_reply --from-stdin --json")
+    print('  notion-ai ask-and-reply "1+1" --json')
+    print("  notion-ai ask-and-reply --from-stdin --json")
     print('  notion-ai app ask "请只回复：OK" --json')
     print()
     print("调试示例:")
@@ -78,7 +78,7 @@ def _run_argv_main(command: str, argv: list[str]) -> int:
 
     old_argv = sys.argv[:]
     sys.argv = [f"notion-ai {command}", *argv]
-    if command in {"ask_and_reply", "start"}:
+    if command in {"ask-and-reply", "start"}:
         try:
             result = target(argv)
             return int(result or 0)

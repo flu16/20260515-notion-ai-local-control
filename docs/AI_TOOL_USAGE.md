@@ -5,7 +5,7 @@
 ## 首选命令
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --json << 'NOTION_AI_AGENT_EOF'
+./venv/bin/notion-ai ask-and-reply --from-stdin --json << 'NOTION_AI_AGENT_EOF'
 [问题文本]
 NOTION_AI_AGENT_EOF
 ```
@@ -17,25 +17,25 @@ NOTION_AI_AGENT_EOF
 如果问题是独立任务，直接使用默认流程：
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
+./venv/bin/notion-ai ask-and-reply --from-stdin --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
 [独立问题]
 NOTION_AI_AGENT_EOF
 ```
 
-如果问题是在继续、追问、改写、扩展或引用当前 Notion AI 对话，显式使用 `--continue_conversation`：
+如果问题是在继续、追问、改写、扩展或引用当前 Notion AI 对话，显式使用 `--continue-conversation`：
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --continue_conversation --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
+./venv/bin/notion-ai ask-and-reply --from-stdin --continue-conversation --timeout 180 --json << 'NOTION_AI_AGENT_EOF'
 [连续追问]
 NOTION_AI_AGENT_EOF
 ```
 
 ## 发布长任务
 
-`--assign_task` 会在提交后只等待 AI 进入生成中，然后返回；不会等待完成，也不会复制回复。
+`--assign-task` 会在提交后只等待 AI 进入生成中，然后返回；不会等待完成，也不会复制回复。
 
 ```bash
-./venv/bin/notion-ai ask --from-stdin --assign_task --json << 'NOTION_AI_AGENT_EOF'
+./venv/bin/notion-ai ask-and-reply --from-stdin --assign-task --json << 'NOTION_AI_AGENT_EOF'
 [长任务]
 NOTION_AI_AGENT_EOF
 ```
@@ -96,9 +96,9 @@ NOTION_AI_AGENT_EOF
 
 ## Agent 调用建议
 
-1. 优先使用 `./venv/bin/notion-ai ask`。
+1. 优先使用 `./venv/bin/notion-ai ask-and-reply`。
 2. 独立问题使用默认流程。
-3. 连续追问才加 `--continue_conversation`。
+3. 连续追问才加 `--continue-conversation`。
 4. 长任务可加 `--timeout 600`。
 5. 自动化场景使用 `--json`。
 6. 只在 `success=true` 时读取 `text`。

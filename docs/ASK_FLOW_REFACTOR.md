@@ -183,8 +183,8 @@ src/notion_ai_local_control/conversation_actions.py
   - `copy_button_info`
   - `error`
   - 失败时的 `step`
-- `--assign_task` 只等待进入 generating，不等待完成，不复制回复。
-- 默认不自动开启新对话，只有显式传入 `--new_conversation` 才开新对话。
+- `--assign-task` 只等待进入 generating，不等待完成，不复制回复。
+- 默认不自动开启新对话，只有显式传入 `--new-conversation` 才开新对话。
 - 不引入鼠标点击作为业务路径。
 
 ## 验证命令
@@ -202,7 +202,7 @@ PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask --help
 ```bash
 ./venv/bin/notion-ai ask "1+1" --json
 PYTHONPATH=src ./venv/bin/python -m notion_ai_local_control.cli ask "1+1" --json
-./venv/bin/notion-ai ask "讲一个短句" --new_conversation --json
+./venv/bin/notion-ai ask "讲一个短句" --new-conversation --json
 ```
 
 如果改了附件逻辑，再准备一个明确的测试文件并跑：

@@ -19,7 +19,7 @@ Entry:
 
 ```bash
 notion-ai start
-notion-ai ask_and_reply ...
+notion-ai ask-and-reply ...
 notion-ai cdp-debug ...
 ```
 
@@ -96,7 +96,7 @@ Flow for existing conversations:
 Thin command router for:
 
 - `start`
-- `ask_and_reply`
+- `ask-and-reply`
 - `app`
 - `cdp-debug`
 
@@ -106,7 +106,7 @@ Starts or restarts Notion desktop with `--remote-debugging-port=<port>`, waits f
 
 ### `ask_cdp.py`
 
-User-facing quick-search ask_and_reply flow: readiness, optional attachment context, submit, wait, copy.
+User-facing quick-search ask-and-reply flow: readiness, optional attachment context, submit, wait, copy.
 
 ### `beta_cdp_input.py`
 

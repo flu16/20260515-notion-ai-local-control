@@ -476,9 +476,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--from-stdin", action="store_true", help="从 stdin 读取问题文本")
     parser.add_argument("--from-clipboard", action="store_true", help="从系统剪贴板读取问题文本")
     parser.add_argument("--timeout", "-t", type=float, default=300.0)
-    parser.add_argument("--continue_conversation", action="store_true",
+    parser.add_argument("--continue-conversation", action="store_true", dest="continue_conversation",
                         help="沿用当前对话；默认会先开始新对话")
-    parser.add_argument("--assign_task", action="store_true", help="提交后只等待进入生成中")
+    parser.add_argument("--assign-task", action="store_true", dest="assign_task", help="提交后只等待进入生成中")
     parser.add_argument(
         "--attach-file",
         action="append",

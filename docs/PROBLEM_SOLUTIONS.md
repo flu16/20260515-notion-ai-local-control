@@ -166,7 +166,7 @@ AXFocus -> AXSelectedTextRange=(0,0) -> Cmd+V -> AXValue 验证
 
 ### 问题
 
-`notion-ai ask --from-clipboard --new_conversation --json` 在提交一个 6000 字左右、
+`notion-ai ask --from-clipboard --new-conversation --json` 在提交一个 6000 字左右、
 包含 shell 代码、文件名、引号和 Markdown-like 标记的长问题时，曾经失败返回：
 
 ```json

@@ -39,9 +39,9 @@ Quick-search flow: ask Notion AI and copy the final reply.
 
 ```bash
 ./venv/bin/notion-ai start
-./venv/bin/notion-ai ask_and_reply "请只回复：OK" --json
-./venv/bin/notion-ai ask_and_reply --from-stdin --json < prompt.txt
-./venv/bin/notion-ai ask_and_reply "继续刚才的话题" --continue_conversation --json
+./venv/bin/notion-ai ask-and-reply "请只回复：OK" --json
+./venv/bin/notion-ai ask-and-reply --from-stdin --json < prompt.txt
+./venv/bin/notion-ai ask-and-reply "继续刚才的话题" --continue-conversation --json
 ```
 
 Debug the quick-search CDP target:
@@ -64,7 +64,7 @@ Main app tab flow: create or reuse Notion AI conversations and work by token.
 
 ## Current Behavior
 
-- `ask_and_reply` controls the quick-search target (`https://app.notion.com/quick-search`), waits for completion, and copies the final reply.
+- `ask-and-reply` controls the quick-search target (`https://app.notion.com/quick-search`), waits for completion, and copies the final reply.
 - `app ask` creates or resolves a main-app Notion AI page, submits the question, and returns the conversation token.
 - `app get-reply` can collect multiple tokens in one command.
 - New main-app conversations are serialized with a local lock so concurrent `app ask` calls do not write into the same tab.
@@ -102,7 +102,7 @@ Main app tab flow: create or reuse Notion AI conversations and work by token.
 ./venv/bin/notion-ai --help
 ./venv/bin/notion-ai start --json
 ./venv/bin/notion-ai cdp-debug --status
-./venv/bin/notion-ai ask_and_reply "请只回复：OK" --json --timeout 60
+./venv/bin/notion-ai ask-and-reply "请只回复：OK" --json --timeout 60
 ./venv/bin/notion-ai app ask "请只回复：OK" --json
 ./venv/bin/notion-ai app get-reply --token <token> --json
 ```
